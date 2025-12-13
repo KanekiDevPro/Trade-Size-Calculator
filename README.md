@@ -1,88 +1,83 @@
-# 📊 Trade-Size-Calculator
+# 🤖 ماشین حساب مدیریت سرمایه (Trade Size Calculator)
 
-A clean and practical trading tool to calculate **position size**,
-**risk**, and **capital exposure**---built for traders who manage risk,
-not emotions.
+یک ابزار تحت وب برای محاسبه **سایز پوزیشن، میزان ریسک و مارجین
+موردنیاز** بر اساس اصول استاندارد مدیریت سرمایه در بازارهای مالی.
 
-🔗 **Live App:**\
+این برنامه برای تریدرهایی ساخته شده که **با عدد تصمیم می‌گیرن، نه با
+احساس**.
+
+🔗 **لینک اجرای آنلاین:**\
 https://trade-size-calculator-gwqneqcuam4fsyqof7hts2.streamlit.app/
 
 ------------------------------------------------------------------------
 
-## 🚀 What This App Does
+## 🎯 هدف پروژه
 
-This calculator helps traders answer one critical question before
-entering any trade:
+سؤال اصلی قبل از هر معامله:
 
-> **"How much should I trade without blowing my account?"**
+> «با توجه به سرمایه، حد ضرر و ریسک، دقیقاً چقدر وارد معامله بشم؟»
 
-You define the risk.\
-The app defines the position size.
-
-No guessing. No overtrading.
+این ابزار دقیقاً همینو جواب می‌ده؛\
+نه بیشتر، نه کمتر.
 
 ------------------------------------------------------------------------
 
-## 🧠 Key Features
+## ✨ امکانات اصلی
 
--   📌 Accurate Position Size Calculation\
--   ⚖️ Risk-based capital management\
--   🧮 Simple inputs, instant results\
--   🎯 Designed for disciplined traders\
--   🌐 Web-based (no install, no setup)
-
-------------------------------------------------------------------------
-
-## 🛠️ How It Works
-
-1.  Enter your **total trading capital**
-2.  Set your **risk percentage per trade**
-3.  Define your **stop-loss distance**
-4.  Get the **exact position size** you should use
-
-That's it.\
-No complexity. Just clarity.
+-   📊 محاسبه دقیق **سایز پوزیشن**
+-   💰 محاسبه **ریسک دلاری واقعی** در هر معامله
+-   ⚡ پشتیبانی از **اهرم (Leverage)** تا 125×
+-   🧮 امکان تعریف چندین سطح ریسک به‌صورت هم‌زمان
+-   🇮🇷 رابط کاربری **کاملاً فارسی + راست‌چین**
+-   🎨 فونت Vazirmatn و UI تمیز
+-   🚀 بدون نیاز به نصب، اجرا در مرورگر
 
 ------------------------------------------------------------------------
 
-## 🧑‍💻 Tech Stack
+## 🧠 منطق محاسبات (خلاصه)
 
--   Python\
+    Position Size = (Capital × Risk %) ÷ Stop Loss %
+
+در صورت استفاده از اهرم:
+
+    Required Margin = Position Size ÷ Leverage
+
+تمام محاسبات با دقت بالا (Decimal) انجام می‌شوند.
+
+------------------------------------------------------------------------
+
+## 🛠️ تکنولوژی‌های استفاده‌شده
+
+-   Python
 -   Streamlit
-
-Lightweight, fast, and to the point.
-
-------------------------------------------------------------------------
-
-## 📈 Who Is This For?
-
--   Forex traders\
--   Crypto traders\
--   Stock & futures traders\
--   Anyone serious about **risk management**
-
-If you gamble → this isn't for you.\
-If you manage risk → you'll use this daily.
+-   Pandas
+-   Decimal
 
 ------------------------------------------------------------------------
 
-## 📌 Why It Matters
+## 🧑‍💻 اجرای لوکال
 
-Most traders fail not because of bad strategies, but because of **bad
-risk management**.
-
-This tool exists to fix exactly that.
-
-------------------------------------------------------------------------
-
-## 📬 Feedback & Ideas
-
-Got ideas for improvements?\
-Found a bug?\
-Want advanced features?
-
-Open an issue or fork the project.
+``` bash
+pip install streamlit pandas
+streamlit run app.py
+```
 
 ------------------------------------------------------------------------
 
-**Trade smart. Protect capital. Stay in the game.**
+## 📈 مناسب چه کسانی است؟
+
+-   تریدرهای کریپتو
+-   تریدرهای فارکس
+-   تریدرهای فیوچرز
+-   هر کسی که مدیریت ریسک براش جدی است
+
+------------------------------------------------------------------------
+
+## ⚠️ سلب مسئولیت
+
+این ابزار فقط برای محاسبه است و توصیه مالی محسوب نمی‌شود.\
+مسئولیت معاملات بر عهده کاربر است.
+
+------------------------------------------------------------------------
+
+**Trade smart. Protect capital. Stay consistent.**
