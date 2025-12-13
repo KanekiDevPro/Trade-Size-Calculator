@@ -27,6 +27,10 @@ def inject_custom_css():
         <style>
         @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
 
+        * {
+            font-family: "Vazirmatn", sans-serif !important;
+        }
+
         html, body, [class*="st-"] {
             font-family: "Vazirmatn", sans-serif !important;
             direction: rtl !important;
@@ -36,6 +40,7 @@ def inject_custom_css():
         h1, h2, h3, h4 {
             font-family: "Vazirmatn", sans-serif !important;
             text-align: right !important;
+            direction: rtl !important;
         }
 
         .stMarkdown, .stText, div[data-testid="stAlert"] {
@@ -73,25 +78,40 @@ def inject_custom_css():
         div[data-testid="stNumberInput"] input {
             direction: ltr !important; 
             text-align: center !important;
+            font-family: "Vazirmatn", sans-serif !important;
         }
         
         div[data-testid="stTextInput"] input {
             direction: ltr !important;
             text-align: left !important;
+            font-family: "Vazirmatn", sans-serif !important;
         }
 
         div[data-testid="stButton"] { 
-            text-align: right !important; 
-            width: 100%; 
+            text-align: center !important;
+            width: 100%;
         }
         
         .stButton button {
-            direction: rtl; 
-            margin-left: auto;
-            margin-right: 0;
-            width: auto;
+            font-family: "Vazirmatn", sans-serif !important;
+            direction: rtl !important;
+            width: 100%;
             border-radius: 8px;
             font-weight: bold;
+            white-space: nowrap !important;
+        }
+        
+        button {
+            font-family: "Vazirmatn", sans-serif !important;
+            direction: rtl !important;
+            white-space: nowrap !important;
+        }
+        
+        .stDownloadButton button {
+            font-family: "Vazirmatn", sans-serif !important;
+            direction: rtl !important;
+            width: 100%;
+            white-space: nowrap !important;
         }
         
         div[data-testid="stMetric"] {
@@ -105,32 +125,49 @@ def inject_custom_css():
             text-align: right !important;
         }
         
+        div[data-testid="stCheckbox"] label {
+            font-family: "Vazirmatn", sans-serif !important;
+        }
+        
+        .stTabs {
+            direction: rtl !important;
+        }
+        
         .stTabs [data-baseweb="tab-list"] {
             gap: 8px;
             direction: rtl !important;
+            display: flex;
+            flex-direction: row-reverse;
         }
         
         .stTabs [data-baseweb="tab"] {
             font-family: "Vazirmatn", sans-serif !important;
             direction: rtl !important;
+            white-space: nowrap !important;
         }
         
-        .stTabs [data-baseweb="tab-list"] button {
-            direction: rtl !important;
-        }
-        
-        .stTabs [data-baseweb="tab-list"] button div {
-            direction: rtl !important;
-        }
-        
-        button[kind="primary"], button[kind="secondary"] {
-            direction: rtl !important;
+        .stTabs [data-baseweb="tab"] div {
             font-family: "Vazirmatn", sans-serif !important;
+            direction: rtl !important;
         }
         
-        .stDownloadButton button {
+        div[data-testid="stExpander"] {
             direction: rtl !important;
+        }
+        
+        div[data-testid="stExpander"] summary {
             font-family: "Vazirmatn", sans-serif !important;
+            direction: rtl !important;
+        }
+        
+        .stSelectbox label, .stNumberInput label, .stTextInput label {
+            font-family: "Vazirmatn", sans-serif !important;
+            direction: rtl !important;
+        }
+        
+        select {
+            font-family: "Vazirmatn", sans-serif !important;
+            direction: rtl !important;
         }
         </style>
         """,
