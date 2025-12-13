@@ -112,6 +112,25 @@ def inject_custom_css():
         
         .stTabs [data-baseweb="tab"] {
             font-family: "Vazirmatn", sans-serif !important;
+            direction: rtl !important;
+        }
+        
+        .stTabs [data-baseweb="tab-list"] button {
+            direction: rtl !important;
+        }
+        
+        .stTabs [data-baseweb="tab-list"] button div {
+            direction: rtl !important;
+        }
+        
+        button[kind="primary"], button[kind="secondary"] {
+            direction: rtl !important;
+            font-family: "Vazirmatn", sans-serif !important;
+        }
+        
+        .stDownloadButton button {
+            direction: rtl !important;
+            font-family: "Vazirmatn", sans-serif !important;
         }
         </style>
         """,
