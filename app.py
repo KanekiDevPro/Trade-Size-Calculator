@@ -1,11 +1,17 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
 from typing import List, Tuple, Optional
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
 import json
 import io
+
+# سعی در import plotly (اختیاری)
+try:
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
 
 st.set_page_config(
     page_title="ماشین حساب مدیریت سرمایه",
@@ -237,6 +243,9 @@ def create_risk_management_table(
 
 def create_visualization(df: pd.DataFrame, leverage: float):
     """ایجاد نمودار تعاملی"""
+    if not PLOTLY_AVAILABLE:
+        return None
+    
     fig = go.Figure()
     
     risk_levels = [col.replace('%', '') for col in df.columns]
@@ -457,8 +466,12 @@ def main():
                         
                         with chart_col:
                             st.subheader("📈 نمودار بصری")
-                            fig = create_visualization(table_df, leverage)
-                            st.plotly_chart(fig, use_container_width=True)
+                            if PLOTLY_AVAILABLE:
+                                fig = create_visualization(table_df, leverage)
+                                if fig:
+                                    st.plotly_chart(fig, use_container_width=True)
+                            else:
+                                st.warning('📊 برای نمایش نمودار، Plotly را نصب کنید: `pip install plotly`')
                         
                         # راهنما
                         st.info("💡 **میزان ریسک:** حداکثر ضرر در صورت فعال شدن SL")
