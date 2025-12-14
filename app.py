@@ -211,24 +211,6 @@ def main():
     st.title('🤖 ماشین حساب مدیریت سرمایه')
     st.markdown("محاسبه دقیق **سایز پوزیشن** بر اساس سرمایه کل، درصد ریسک و اهرم.")
     
-    # Developer Info
-    st.markdown(
-        """
-        <div style="text-align: center; padding: 8px; margin-bottom: 10px; background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); border-radius: 8px; color: white;">
-            <span style="font-size: 14px;">👨‍💻 توسعه داده شده توسط <strong>KanekiDevPro</strong></span>
-            <span style="margin: 0 10px;">|</span>
-            <a href="https://github.com/KanekiDevPro" target="_blank" style="color: white; text-decoration: none;">
-                <strong>🐙 GitHub</strong>
-            </a>
-            <span style="margin: 0 10px;">|</span>
-            <a href="https://t.me/AminSadri81" target="_blank" style="color: white; text-decoration: none;">
-                <strong>✈️ Telegram</strong>
-            </a>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-    
     st.divider()
 
     with st.container():
