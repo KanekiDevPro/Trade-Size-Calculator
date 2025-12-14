@@ -317,8 +317,6 @@ def main():
             <p style="margin: 5px 0;">ساخته شده با ❤️ توسط <strong>KanekiDevPro</strong></p>
             <p style="margin: 5px 0;">
                 <a href="https://github.com/KanekiDevPro" target="_blank" style="color: #667eea; text-decoration: none; margin: 0 8px;">GitHub 🐙</a>
-                <span style="color: #ddd;"> | </span>
-                <a href="https://t.me/AminSadri81" target="_blank" style="color: #667eea; text-decoration: none; margin: 0 8px;">Telegram ✈️</a>
             </p>
             <p style="margin: 5px 0; font-size: 11px; color: #999;">نسخه 1.0 | © 2025</p>
         </div>
