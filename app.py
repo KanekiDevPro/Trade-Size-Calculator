@@ -172,12 +172,10 @@ def create_risk_management_table(
         for risk_percent in risk_levels:
             risk_factor = Decimal(str(risk_percent)) / Decimal('100')
             
-            # محاسبات پایه
             dollar_risk = float(capital_dec * risk_factor)
             position_size_dec = (capital_dec * risk_factor) / sl_factor
             position_size = float(position_size_dec)
             
-            # محاسبه مارجین با اهرم
             margin_required = float(position_size_dec / leverage_dec)
             
             col_name = f"{risk_percent}%"
