@@ -59,6 +59,8 @@ https://trade-size-calculator-gwqneqcuam4fsyqof7hts2.streamlit.app
 
 ``` bash
 pip install streamlit pandas
+```
+``` bash
 streamlit run app.py
 ```
 
