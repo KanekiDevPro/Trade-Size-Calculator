@@ -7,7 +7,7 @@
 احساس**.
 
 🔗 **لینک اجرای آنلاین:**\
-https://trade-size-calculator-gwqneqcuam4fsyqof7hts2.streamlit.app/
+https://trade-size-calculator-gwqneqcuam4fsyqof7hts2.streamlit.app
 
 ------------------------------------------------------------------------
 
