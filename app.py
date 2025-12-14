@@ -11,7 +11,6 @@ st.set_page_config(
 
 @st.cache_data
 def inject_custom_css():
-    """بارگذاری CSS سفارشی با استفاده از cache برای بهینه‌سازی"""
     st.markdown(
         """
         <style>
@@ -100,7 +99,6 @@ def inject_custom_css():
     )
 
 def validate_inputs(capital: float, stop_loss_percentage: float, risk_levels: List[float], leverage: float) -> Optional[str]:
-    """اعتبارسنجی ورودی‌ها"""
     if capital <= 0:
         return "سرمایه باید بیشتر از صفر باشد."
     
@@ -128,7 +126,6 @@ def validate_inputs(capital: float, stop_loss_percentage: float, risk_levels: Li
     return None
 
 def parse_risk_levels(risk_input: str) -> Tuple[Optional[List[float]], Optional[str]]:
-    """تبدیل رشته ورودی به لیست اعداد با مدیریت خطا"""
     if not risk_input or not risk_input.strip():
         return None, "لطفاً سطوح ریسک را وارد کنید."
     
@@ -161,7 +158,6 @@ def create_risk_management_table(
     risk_levels: List[float],
     leverage: float = 1.0
 ) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    """محاسبه جدول مدیریت ریسک با دقت بالا"""
     
     error = validate_inputs(capital, stop_loss_percentage, risk_levels, leverage)
     if error:
@@ -219,7 +215,6 @@ def main():
     
     st.divider()
 
-    # ورودی‌های اصلی
     with st.container():
         col1, col2 = st.columns(2)
         
@@ -244,7 +239,6 @@ def main():
                 help="درصد افت قیمت تا حد ضرر (مثلاً ۱.۵٪ یعنی SL در ۱.۵٪ پایین‌تر از قیمت ورود)"
             )
 
-    # بخش اهرم
     use_leverage = st.checkbox('⚡ استفاده از اهرم (Leverage)', value=False)
     
     leverage = 1.0
@@ -261,14 +255,12 @@ def main():
         
         st.warning(f"⚠️ **هشدار:** با اهرم {leverage:.0f}×، ریسک معامله شما {leverage:.0f} برابر می‌شود. با احتیاط استفاده کنید!")
 
-    # ورودی سطوح ریسک
     risk_inputs_str = st.text_input(
         "سطوح ریسک مورد نظر (٪) - با کاما جدا کنید:",
         value="0.25, 0.5, 1.0, 2.0",
         help="مثال: 0.5, 1, 2 یا 0.25, 0.5, 1, 1.5, 2, 3"
     )
 
-    # دکمه محاسبه
     if st.button('🧮 محاسبه کن', type="primary"):
         risk_levels, parse_error = parse_risk_levels(risk_inputs_str)
         
@@ -288,7 +280,6 @@ def main():
         else:
             st.success("✅ محاسبات با موفقیت انجام شد.")
             
-            # نمایش متریک‌ها
             if use_leverage:
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("سرمایه", f"${capital:,.0f}")
@@ -303,7 +294,6 @@ def main():
 
             st.divider()
             
-            # نمایش جدول
             st.subheader("📊 جدول سایز پوزیشن")
             
             st.dataframe(
@@ -311,7 +301,6 @@ def main():
                 use_container_width=True
             )
             
-            # راهنمای تفسیر
             st.info("💡 **ردیف اول (میزان ریسک دلاری):** این مقدار نشان‌دهنده **حداکثر مبلغی** است که شما مجازید در این معامله، در صورت رسیدن به حد ضرر، از دست بدهید.")
             
             if use_leverage:
