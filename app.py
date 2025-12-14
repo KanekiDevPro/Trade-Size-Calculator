@@ -211,6 +211,24 @@ def main():
     st.title('🤖 ماشین حساب مدیریت سرمایه')
     st.markdown("محاسبه دقیق **سایز پوزیشن** بر اساس سرمایه کل، درصد ریسک و اهرم.")
     
+    # Developer Info
+    st.markdown(
+        """
+        <div style="text-align: center; padding: 8px; margin-bottom: 10px; background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); border-radius: 8px; color: white;">
+            <span style="font-size: 14px;">👨‍💻 توسعه داده شده توسط <strong>KanekiDevPro</strong></span>
+            <span style="margin: 0 10px;">|</span>
+            <a href="https://github.com/KanekiDevPro" target="_blank" style="color: white; text-decoration: none;">
+                <strong>🐙 GitHub</strong>
+            </a>
+            <span style="margin: 0 10px;">|</span>
+            <a href="https://t.me/AminSadri81" target="_blank" style="color: white; text-decoration: none;">
+                <strong>✈️ Telegram</strong>
+            </a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    
     st.divider()
 
     with st.container():
@@ -308,6 +326,23 @@ def main():
                 st.info("🚀 **ردیف دوم (سایز پوزیشن):** این مقدار نشان‌دهنده **ارزش کل دلاری** است که باید با آن وارد معامله شوید تا در صورت فعال شدن حد ضرر، دقیقا مبلغ ردیف اول را از دست بدهید.")
             
             st.caption("💡 این محاسبات بر اساس فرمول‌های استاندارد مدیریت ریسک در بازارهای مالی انجام شده‌اند.")
+    
+    # Footer
+    st.divider()
+    st.markdown(
+        """
+        <div style="text-align: center; padding: 15px; color: #666; font-size: 13px;">
+            <p style="margin: 5px 0;">ساخته شده با ❤️ توسط <strong>KanekiDevPro</strong></p>
+            <p style="margin: 5px 0;">
+                <a href="https://github.com/KanekiDevPro" target="_blank" style="color: #667eea; text-decoration: none; margin: 0 8px;">GitHub 🐙</a>
+                <span style="color: #ddd;">|</span>
+                <a href="https://t.me/AminSadri81" target="_blank" style="color: #667eea; text-decoration: none; margin: 0 8px;">Telegram ✈️</a>
+            </p>
+            <p style="margin: 5px 0; font-size: 11px; color: #999;">نسخه 1.0.0 | © 2024</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 if __name__ == "__main__":
     main()
