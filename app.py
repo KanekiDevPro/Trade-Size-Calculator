@@ -60,13 +60,6 @@ def inject_custom_css():
             padding: 10px 8px !important;
         }
         
-        /* اضافه شدن قابلیت اسکرول جدول برای موبایل و نمایش بهتر */
-        div[data-testid="stDataFrame"] > div {
-            overflow-x: auto !important;
-            overflow-y: auto !important;
-            max-height: 400px !important;
-        }
-        
         div[data-testid="stNumberInput"] input {
             direction: ltr !important; 
             text-align: center !important;
