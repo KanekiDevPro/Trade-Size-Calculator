@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from typing import List, Tuple, Optional
 from decimal import Decimal, InvalidOperation
+import re
 
 st.set_page_config(
     page_title="ماشین حساب مدیریت سرمایه",
@@ -131,7 +132,11 @@ def parse_risk_levels(risk_input: str) -> Tuple[Optional[List[float]], Optional[
     
     try:
         risk_levels = []
-        parts = risk_input.replace('،', ',').split(',')
+        # تبدیل اعداد فارسی به انگلیسی (اضافه شده)
+        arabic_num_map = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
+        risk_input = risk_input.translate(arabic_num_map)
+        
+        parts = re.split(r'[،,\s]+', risk_input)  # جداکننده های فارسی، انگلیسی، فاصله
         
         for part in parts:
             part = part.strip()
@@ -218,7 +223,7 @@ def main():
         
         with col1:
             capital = st.number_input(
-                'سرمایه کل (USD)', 
+                'سرمایه کل (USDT)', 
                 min_value=0.01, 
                 value=1000.0, 
                 step=100.0,
@@ -251,7 +256,8 @@ def main():
             help="اهرم معاملاتی (مثلاً 10× یعنی ده برابر قدرت خرید)"
         )
         
-        st.warning(f"⚠️ **هشدار:** با اهرم {leverage:.0f}×، ریسک معامله شما {leverage:.0f} برابر می‌شود. با احتیاط استفاده کنید!")
+        if leverage > 50:  # هشدار سریع و کوتاه در صورت اهرم بالای 50
+            st.warning(f"⚠️ **هشدار:** اهرم بالا ({leverage:.0f}×) ریسک معامله را به شدت افزایش می‌دهد. با احتیاط معامله کنید.")
 
     risk_inputs_str = st.text_input(
         "سطوح ریسک مورد نظر (٪) - با کاما جدا کنید:",
@@ -259,55 +265,85 @@ def main():
         help="مثال: 0.5, 1, 2 یا 0.25, 0.5, 1, 1.5, 2, 3"
     )
 
-    if st.button('🧮 محاسبه کن', type="primary"):
-        risk_levels, parse_error = parse_risk_levels(risk_inputs_str)
-        
-        if parse_error:
-            st.error(f"❌ {parse_error}")
-            return
-        
-        table_df, calc_error = create_risk_management_table(
-            capital, 
-            stop_loss_percentage, 
-            risk_levels,
-            leverage
-        )
+    # حذف دکمه و تغییر به آپدیت خودکار با هر تغییر ورودی
+    risk_levels, parse_error = parse_risk_levels(risk_inputs_str)
+    use_warning = False
+    if parse_error:
+        st.error(f"❌ {parse_error}")
+        return
+    
+    # هشدار تکی برای ریسک بیش از 10٪ (حتی اگر وارد شده باشه)
+    for risk in risk_levels:
+        if risk > 10:
+            st.warning(f"⚠️ سطح ریسک {risk}% بسیار بالاست! این می‌تواند شما را به خطر بزرگی بیندازد.")
+            use_warning = True
+            break
 
-        if calc_error:
-            st.error(f"❌ {calc_error}")
+    table_df, calc_error = create_risk_management_table(
+        capital, 
+        stop_loss_percentage, 
+        risk_levels,
+        leverage
+    )
+
+    if calc_error:
+        st.error(f"❌ {calc_error}")
+    else:
+        st.success("✅ محاسبات با موفقیت انجام شد.")
+        
+        if use_leverage:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("سرمایه", f"${capital:,.0f}")
+            c2.metric("حد ضرر", f"{stop_loss_percentage:.2f}%")
+            c3.metric("اهرم", f"{leverage:.0f}×")
+            c4.metric("تعداد سطوح", len(risk_levels))
         else:
-            st.success("✅ محاسبات با موفقیت انجام شد.")
-            
-            if use_leverage:
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("سرمایه", f"${capital:,.0f}")
-                c2.metric("حد ضرر", f"{stop_loss_percentage:.2f}%")
-                c3.metric("اهرم", f"{leverage:.0f}×")
-                c4.metric("تعداد سطوح", len(risk_levels))
-            else:
-                c1, c2, c3 = st.columns(3)
-                c1.metric("سرمایه", f"${capital:,.0f}")
-                c2.metric("حد ضرر", f"{stop_loss_percentage:.2f}%")
-                c3.metric("تعداد سطوح", len(risk_levels))
+            c1, c2, c3 = st.columns(3)
+            c1.metric("سرمایه", f"${capital:,.0f}")
+            c2.metric("حد ضرر", f"{stop_loss_percentage:.2f}%")
+            c3.metric("تعداد سطوح", len(risk_levels))
 
-            st.divider()
-            
-            st.subheader("📊 جدول سایز پوزیشن")
-            
-            st.dataframe(
-                table_df.style.format("${:,.2f}"), 
-                use_container_width=True
-            )
-            
-            st.info("💡 **ردیف اول (میزان ریسک دلاری):** این مقدار نشان‌دهنده **حداکثر مبلغی** است که شما مجازید در این معامله، در صورت رسیدن به حد ضرر، از دست بدهید.")
-            
-            if use_leverage:
-                st.info("📊 **ردیف دوم (سایز پوزیشن):** ارزش کل معامله‌ای که باید باز کنید.")
-                st.info(f"💳 **ردیف سوم (مارجین لازم با اهرم {leverage:.0f}×):** با استفاده از اهرم {leverage:.0f}×، فقط کافیه این مقدار (سایز پوزیشن ÷ {leverage:.0f}) از سرمایه‌ات رو وارد کنی!")
-            else:
-                st.info("🚀 **ردیف دوم (سایز پوزیشن):** این مقدار نشان‌دهنده **ارزش کل دلاری** است که باید با آن وارد معامله شوید تا در صورت فعال شدن حد ضرر، دقیقا مبلغ ردیف اول را از دست بدهید.")
-            
-            st.caption("💡 این محاسبات بر اساس فرمول‌های استاندارد مدیریت ریسک در بازارهای مالی انجام شده‌اند.")
+        st.divider()
+        
+        st.subheader("📊 جدول سایز پوزیشن")
+        
+        st.dataframe(
+            table_df.style.format("${:,.2f}"), 
+            use_container_width=True
+        )
+        
+        # دکمه دانلود CSV (اضافه شده)
+        csv = table_df.to_csv(encoding='utf-8-sig')
+        st.download_button(
+            label="📥 دانلود جدول به صورت CSV",
+            data=csv,
+            file_name='risk_management_table.csv',
+            mime='text/csv'
+        )
+        
+        st.info("💡 **ردیف اول (میزان ریسک دلاری):** این مقدار نشان‌دهنده **حداکثر مبلغی** است که شما مجازید در این معامله، در صورت رسیدن به حد ضرر، از دست بدهید.")
+        
+        if use_leverage:
+            st.info("📊 **ردیف دوم (سایز پوزیشن):** ارزش کل معامله‌ای که باید باز کنید.")
+            st.info(f"💳 **ردیف سوم (مارجین لازم با اهرم {leverage:.0f}×):** با استفاده از اهرم {leverage:.0f}×، فقط کافیه این مقدار (سایز پوزیشن ÷ {leverage:.0f}) از سرمایه‌ات رو وارد کنی!")
+        else:
+            st.info("🚀 **ردیف دوم (سایز پوزیشن):** این مقدار نشان‌دهنده **ارزش کل دلاری** است که باید با آن وارد معامله شوید تا در صورت فعال شدن حد ضرر، دقیقا مبلغ ردیف اول را از دست بدهید.")
+        
+        st.caption("💡 این محاسبات بر اساس فرمول‌های استاندارد مدیریت ریسک در بازارهای مالی انجام شده‌اند.")
+    
+    st.divider()
+    st.markdown(
+        """
+        <div style="text-align: center; padding: 15px; color: #666; font-size: 13px;">
+            <p style="margin: 5px 0;">ساخته شده با ❤️ توسط <strong>KanekiDevPro</strong></p>
+            <p style="margin: 5px 0;">
+                <a href="https://github.com/KanekiDevPro" target="_blank" style="color: #667eea; text-decoration: none; margin: 0 8px;">GitHub 🐙</a>
+            </p>
+            <p style="margin: 5px 0; font-size: 11px; color: #999;">نسخه 1.0 | © 2025</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 if __name__ == "__main__":
     main()
