@@ -281,11 +281,6 @@ def main():
         risk_levels,
         leverage
     )
-
-    if calc_error:
-        st.error(f"❌ {calc_error}")
-    else:
-        st.success("✅ محاسبات با موفقیت انجام شد.")
         
         if use_leverage:
             c1, c2, c3, c4 = st.columns(4)
