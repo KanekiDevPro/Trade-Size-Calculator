@@ -281,7 +281,10 @@ def main():
         risk_levels,
         leverage
     )
-        
+
+    if calc_error:
+        st.error(f"❌ {calc_error}")
+    else:
         if use_leverage:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("سرمایه", f"${capital:,.0f}")
