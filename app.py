@@ -1,14 +1,17 @@
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 from typing import List, Tuple, Optional
 from decimal import Decimal, InvalidOperation
 
+# --- تنظیمات صفحه ---
 st.set_page_config(
-    page_title="ماشین حساب مدیریت سرمایه",
-    page_icon="🤖",
+    page_title="مدیریت سرمایه حرفه‌ای",
+    page_icon="💎",
     layout="centered"
 )
 
+# --- استایل CSS ---
 @st.cache_data
 def inject_custom_css():
     st.markdown(
@@ -21,306 +24,258 @@ def inject_custom_css():
             direction: rtl !important;
             text-align: right;
         }
-
-        h1, h2, h3, h4 {
-            font-family: "Vazirmatn", sans-serif !important;
-            text-align: right !important;
-        }
-
-        .stMarkdown, .stText, div[data-testid="stAlert"] {
-            text-align: right !important;
-            direction: rtl !important;
-        }
-
-        div[data-testid="stDataFrame"] table thead tr th, 
-        div[data-testid="stDataFrame"] table tbody tr th,
-        div[data-testid="stDataFrame"] table tbody tr td {
-            font-family: "Vazirmatn", sans-serif !important;
-            text-align: center !important;
-            font-size: 15px !important;
-        }
         
-        div[data-testid="stDataFrame"] table tbody tr th {
-            text-align: right !important;
-            font-weight: 600 !important;
+        /* تب‌ها */
+        .stTabs [data-baseweb="tab-list"] {
+            justify-content: center;
+            gap: 20px;
         }
-        
-        div[data-testid="stDataFrame"] table {
-            border-collapse: collapse !important;
-        }
-        
-        div[data-testid="stDataFrame"] table thead tr th {
-            background-color: #f0f2f6 !important;
-            font-weight: 600 !important;
-            padding: 12px 8px !important;
-        }
-        
-        div[data-testid="stDataFrame"] table tbody tr td {
-            padding: 10px 8px !important;
-        }
-        
-        div[data-testid="stNumberInput"] input {
-            direction: ltr !important; 
-            text-align: center !important;
-        }
-        
-        div[data-testid="stTextInput"] input {
-            direction: ltr !important;
-            text-align: left !important;
-        }
-
-        div[data-testid="stButton"] { 
-            text-align: right !important; 
-            width: 100%; 
-        }
-        
-        .stButton button {
-            direction: rtl; 
-            margin-left: auto;
-            margin-right: 0;
-            width: auto;
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            white-space: pre-wrap;
             border-radius: 8px;
+            padding: 10px 20px;
             font-weight: bold;
         }
         
+        /* متریک‌ها */
         div[data-testid="stMetric"] {
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center !important;
+            direction: ltr !important; /* اعداد چپ چین */
+        }
+        div[data-testid="stMetricLabel"] {
             direction: rtl !important;
-            text-align: right !important;
-            font-family: "Vazirmatn", sans-serif !important;
+            text-align: center !important;
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        /* اینپوت‌ها */
+        div[data-testid="stNumberInput"] input, div[data-testid="stTextInput"] input {
+            direction: ltr !important; 
+            text-align: center !important;
+            font-weight: 500;
+        }
+
+        /* دکمه */
+        div[data-testid="stButton"] button {
+            width: 100%;
+            border-radius: 10px;
+            font-weight: bold;
+            font-size: 16px;
+            padding: 0.5rem 1rem;
         }
         
-        div[data-testid="stCheckbox"] {
-            direction: rtl !important;
-            text-align: right !important;
+        /* جداول */
+        div[data-testid="stDataFrame"] table thead tr th {
+            background-color: #f1f3f5 !important;
+            text-align: center !important;
+        }
+        div[data-testid="stDataFrame"] table tbody tr td {
+            text-align: center !important;
+            font-family: 'Courier New', monospace !important;
         }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-def validate_inputs(capital: float, stop_loss_percentage: float, risk_levels: List[float], leverage: float) -> Optional[str]:
-    if capital <= 0:
-        return "سرمایه باید بیشتر از صفر باشد."
-    
-    if stop_loss_percentage <= 0:
-        return "درصد حد ضرر باید بیشتر از صفر باشد."
-    
-    if stop_loss_percentage >= 100:
-        return "درصد حد ضرر نمی‌تواند بیشتر یا مساوی ۱۰۰٪ باشد."
-    
-    if leverage < 1:
-        return "اهرم باید حداقل ۱ باشد."
-    
-    if leverage > 125:
-        return "اهرم نمی‌تواند بیشتر از ۱۲۵ باشد."
-    
-    if not risk_levels:
-        return "لطفاً حداقل یک سطح ریسک وارد کنید."
-    
-    for risk in risk_levels:
-        if risk <= 0:
-            return "تمام سطوح ریسک باید بیشتر از صفر باشند."
-        if risk >= 100:
-            return "سطوح ریسک نمی‌توانند بیشتر یا مساوی ۱۰۰٪ باشند."
-    
+# --- توابع کمکی ---
+def validate_price_inputs(entry: float, sl: float, tp: float) -> Optional[str]:
+    if entry <= 0 or sl <= 0:
+        return "قیمت ورود و حد ضرر باید مثبت باشند."
+    if entry == sl:
+        return "قیمت ورود نمی‌تواند برابر با حد ضرر باشد."
+    if tp > 0:
+        if (entry > sl and tp <= entry) or (entry < sl and tp >= entry):
+            return "قیمت تارگت با جهت معامله (Long/Short) همخوانی ندارد."
     return None
 
-def parse_risk_levels(risk_input: str) -> Tuple[Optional[List[float]], Optional[str]]:
-    if not risk_input or not risk_input.strip():
-        return None, "لطفاً سطوح ریسک را وارد کنید."
-    
+def calculate_advanced_position(
+    capital: float, risk_percent: float, leverage: float,
+    entry: float, sl: float, tp: float, fee_rate: float
+):
     try:
-        risk_levels = []
-        parts = risk_input.replace('،', ',').split(',')
+        # تشخیص جهت
+        is_long = entry > sl
+        direction = "LONG 🟢" if is_long else "SHORT 🔴"
         
-        for part in parts:
-            part = part.strip()
-            if part:
-                try:
-                    value = float(part)
-                    risk_levels.append(value)
-                except ValueError:
-                    return None, f"مقدار '{part}' معتبر نیست. لطفاً فقط اعداد وارد کنید."
+        # محاسبه فاصله درصدی استاپ
+        price_diff = abs(entry - sl)
+        sl_percent = (price_diff / entry)
         
-        if not risk_levels:
-            return None, "لطفاً حداقل یک سطح ریسک معتبر وارد کنید."
+        if sl_percent == 0: return None, "فاصله استاپ صفر است"
+
+        # محاسبه حجم
+        risk_amount = capital * (risk_percent / 100)
+        # حجم کل پوزیشن (USDT) = ریسک دلاری / درصد استاپ
+        position_size_usdt = risk_amount / sl_percent
         
-        risk_levels = sorted(set(risk_levels))
+        # مقدار کوین/ارز
+        position_qty = position_size_usdt / entry
         
-        return risk_levels, None
+        # مارجین درگیر
+        margin = position_size_usdt / leverage
         
+        # محاسبات تارگت و R/R
+        rr_ratio = 0.0
+        potential_profit = 0.0
+        net_profit = 0.0
+        total_fee = 0.0
+        
+        if tp > 0:
+            tp_diff = abs(tp - entry)
+            rr_ratio = tp_diff / price_diff
+            
+            # سود ناخالص
+            potential_profit = position_size_usdt * (tp_diff / entry)
+            
+            # تخمین کارمزد (ورود + خروج)
+            # فرض: کارمزد روی حجم کل اعمال میشه
+            open_fee = position_size_usdt * (fee_rate / 100)
+            close_fee = (position_qty * tp) * (fee_rate / 100)
+            total_fee = open_fee + close_fee
+            
+            net_profit = potential_profit - total_fee
+
+        return {
+            "direction": direction,
+            "sl_percent": sl_percent * 100,
+            "position_size_usdt": position_size_usdt,
+            "position_qty": position_qty,
+            "margin": margin,
+            "risk_amount": risk_amount,
+            "rr_ratio": rr_ratio,
+            "net_profit": net_profit,
+            "total_fee": total_fee,
+            "potential_profit": potential_profit
+        }, None
+
     except Exception as e:
-        return None, f"خطا در پردازش: {str(e)}"
+        return None, str(e)
 
-def create_risk_management_table(
-    capital: float, 
-    stop_loss_percentage: float, 
-    risk_levels: List[float],
-    leverage: float = 1.0
-) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    
-    error = validate_inputs(capital, stop_loss_percentage, risk_levels, leverage)
-    if error:
-        return None, error
-    
-    try:
-        capital_dec = Decimal(str(capital))
-        sl_factor = Decimal(str(stop_loss_percentage)) / Decimal('100')
-        leverage_dec = Decimal(str(leverage))
-        
-        data = {}
-        for risk_percent in risk_levels:
-            risk_factor = Decimal(str(risk_percent)) / Decimal('100')
-            
-            dollar_risk = float(capital_dec * risk_factor)
-            position_size_dec = (capital_dec * risk_factor) / sl_factor
-            position_size = float(position_size_dec)
-            
-            margin_required = float(position_size_dec / leverage_dec)
-            
-            col_name = f"{risk_percent}%"
-            
-            if leverage > 1:
-                data[col_name] = [
-                    dollar_risk,
-                    position_size,
-                    margin_required
-                ]
-            else:
-                data[col_name] = [dollar_risk, position_size]
-        
-        if leverage > 1:
-            index_labels = [
-                '💰 میزان ریسک',
-                '📊 سایز پوزیشن',
-                '💳 مارجین لازم (با اهرم)'
-            ]
-        else:
-            index_labels = ['💰 میزان ریسک', '📊 سایز پوزیشن']
-        
-        df = pd.DataFrame(data, index=index_labels)
-        
-        return df, None
-        
-    except (InvalidOperation, ValueError, ZeroDivisionError) as e:
-        return None, f"خطا در محاسبات: {str(e)}"
-
+# --- تابع اصلی ---
 def main():
     inject_custom_css()
 
-    st.title('🤖 ماشین حساب مدیریت سرمایه')
-    st.markdown("محاسبه دقیق **سایز پوزیشن** بر اساس سرمایه کل، درصد ریسک و اهرم.")
+    st.title('💎 دستیار تریدر حرفه‌ای')
+    st.markdown("محاسبه دقیق سایز پوزیشن، مدیریت ریسک و کارمزدها")
     
-    st.divider()
+    # تنظیمات عمومی (بالای تب‌ها)
+    with st.expander("⚙️ تنظیمات سرمایه و اهرم", expanded=True):
+        col_cap, col_lev, col_fee = st.columns(3)
+        with col_cap:
+            capital = st.number_input('سرمایه کل (USDT)', value=1000.0, step=100.0, format="%.0f")
+        with col_lev:
+            leverage = st.number_input('اهرم (Leverage)', value=10, min_value=1, max_value=125)
+        with col_fee:
+            fee_rate = st.number_input('کارمزد صرافی (%)', value=0.04, step=0.01, format="%.3f", help="مجموع کارمزد باز و بسته کردن (حدودی)")
 
-    with st.container():
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            capital = st.number_input(
-                'سرمایه کل (USDT)', 
-                min_value=0.01, 
-                value=1000.0, 
-                step=100.0,
-                format="%.0f",
-                help="مجموع سرمایه‌ای که برای معامله در اختیار دارید"
-            )
-        
-        with col2:
-            stop_loss_percentage = st.number_input(
-                'حد ضرر معامله (٪)', 
-                min_value=0.01,
-                max_value=99.99,
-                value=1.5, 
-                step=0.1,
-                format="%.2f",
-                help="درصد افت قیمت تا حد ضرر (مثلاً ۱.۵٪ یعنی SL در ۱.۵٪ پایین‌تر از قیمت ورود)"
-            )
+    # تب‌بندی
+    tab_price, tab_percent = st.tabs(["📊 محاسبه قیمتی (Entry/SL)", "🧮 محاسبه درصدی (کلاسیک)"])
 
-    use_leverage = st.checkbox('⚡ استفاده از اهرم (Leverage)', value=False)
-    
-    leverage = 1.0
-    if use_leverage:
-        leverage = st.number_input(
-            'مقدار اهرم (×)',
-            min_value=1.0,
-            max_value=125.0,
-            value=10.0,
-            step=1.0,
-            format="%.0f",
-            help="اهرم معاملاتی (مثلاً 10× یعنی ده برابر قدرت خرید)"
-        )
-        
-        st.warning(f"⚠️ **هشدار:** با اهرم {leverage:.0f}×، ریسک معامله شما {leverage:.0f} برابر می‌شود. با احتیاط استفاده کنید!")
+    # --- تب اول: محاسبه قیمتی (جدید) ---
+    with tab_price:
+        col_p1, col_p2, col_p3 = st.columns(3)
+        with col_p1:
+            entry_price = st.number_input('قیمت ورود (Entry)', min_value=0.0, format="%.4f")
+        with col_p2:
+            sl_price = st.number_input('حد ضرر (Stop Loss)', min_value=0.0, format="%.4f")
+        with col_p3:
+            tp_price = st.number_input('حد سود (Take Profit)', min_value=0.0, format="%.4f", help="اختیاری")
 
-    risk_inputs_str = st.text_input(
-        "سطوح ریسک مورد نظر (٪) - با کاما جدا کنید:",
-        value="0.25, 0.5, 1.0, 2.0",
-        help="مثال: 0.5, 1, 2 یا 0.25, 0.5, 1, 1.5, 2, 3"
-    )
+        risk_per_trade = st.slider('ریسک در هر معامله (%)', 0.1, 5.0, 1.0, 0.1)
 
-    if st.button('🧮 محاسبه کن', type="primary"):
-        risk_levels, parse_error = parse_risk_levels(risk_inputs_str)
-        
-        if parse_error:
-            st.error(f"❌ {parse_error}")
-            return
-        
-        table_df, calc_error = create_risk_management_table(
-            capital, 
-            stop_loss_percentage, 
-            risk_levels,
-            leverage
-        )
-
-        if calc_error:
-            st.error(f"❌ {calc_error}")
-        else:
-            st.success("✅ محاسبات با موفقیت انجام شد.")
-            
-            if use_leverage:
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("سرمایه", f"${capital:,.0f}")
-                c2.metric("حد ضرر", f"{stop_loss_percentage:.2f}%")
-                c3.metric("اهرم", f"{leverage:.0f}×")
-                c4.metric("تعداد سطوح", len(risk_levels))
+        if st.button('محاسبه پوزیشن', key='btn_price', type="primary"):
+            val_err = validate_price_inputs(entry_price, sl_price, tp_price)
+            if val_err:
+                st.error(f"❌ {val_err}")
             else:
-                c1, c2, c3 = st.columns(3)
-                c1.metric("سرمایه", f"${capital:,.0f}")
-                c2.metric("حد ضرر", f"{stop_loss_percentage:.2f}%")
-                c3.metric("تعداد سطوح", len(risk_levels))
+                res, err = calculate_advanced_position(capital, risk_per_trade, leverage, entry_price, sl_price, tp_price, fee_rate)
+                if err:
+                    st.error(f"خطا: {err}")
+                else:
+                    # نمایش نتایج
+                    st.divider()
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("جهت معامله", res['direction'])
+                    c2.metric("حجم کل (USDT)", f"${res['position_size_usdt']:,.2f}")
+                    c3.metric("مارجین لازم", f"${res['margin']:,.2f}")
+                    c4.metric("ریسک دلاری", f"${res['risk_amount']:,.2f}", delta=f"-{res['sl_percent']:.2f}%")
 
-            st.divider()
-            
-            st.subheader("📊 جدول سایز پوزیشن")
-            
-            st.dataframe(
-                table_df.style.format("${:,.2f}"), 
-                use_container_width=True
-            )
-            
-            st.info("💡 **ردیف اول (میزان ریسک دلاری):** این مقدار نشان‌دهنده **حداکثر مبلغی** است که شما مجازید در این معامله، در صورت رسیدن به حد ضرر، از دست بدهید.")
-            
-            if use_leverage:
-                st.info("📊 **ردیف دوم (سایز پوزیشن):** ارزش کل معامله‌ای که باید باز کنید.")
-                st.info(f"💳 **ردیف سوم (مارجین لازم با اهرم {leverage:.0f}×):** با استفاده از اهرم {leverage:.0f}×، فقط کافیه این مقدار (سایز پوزیشن ÷ {leverage:.0f}) از سرمایه‌ات رو وارد کنی!")
-            else:
-                st.info("🚀 **ردیف دوم (سایز پوزیشن):** این مقدار نشان‌دهنده **ارزش کل دلاری** است که باید با آن وارد معامله شوید تا در صورت فعال شدن حد ضرر، دقیقا مبلغ ردیف اول را از دست بدهید.")
-            
-            st.caption("💡 این محاسبات بر اساس فرمول‌های استاندارد مدیریت ریسک در بازارهای مالی انجام شده‌اند.")
-    
-    st.divider()
+                    # ردیف دوم اطلاعات
+                    st.markdown("---")
+                    cc1, cc2, cc3 = st.columns(3)
+                    
+                    if res['rr_ratio'] > 0:
+                        cc1.metric("ریسک به ریوارد (R/R)", f"1 : {res['rr_ratio']:.2f}")
+                        cc2.metric("سود خالص (با کسر کارمزد)", f"${res['net_profit']:,.2f}", delta_color="normal")
+                        cc3.metric("کارمزد کل (تخمینی)", f"${res['total_fee']:,.2f}")
+                        
+                        # گیج چارت ساده برای R/R
+                        fig = go.Figure(go.Indicator(
+                            mode = "gauge+number",
+                            value = res['rr_ratio'],
+                            title = {'text': "کیفیت معامله (R/R)"},
+                            gauge = {
+                                'axis': {'range': [0, 5]},
+                                'bar': {'color': "#00cc96" if res['rr_ratio'] >= 2 else "#ffa600"},
+                                'steps': [
+                                    {'range': [0, 1], 'color': "#ffefef"},
+                                    {'range': [1, 2], 'color': "#fff8e1"},
+                                    {'range': [2, 5], 'color': "#e6fffa"}],
+                            }
+                        ))
+                        fig.update_layout(height=250, margin=dict(l=20, r=20, t=30, b=20))
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        cc1.info("برای محاسبه سود، قیمت تارگت را وارد کنید.")
+                    
+                    st.code(f"{res['position_qty']:.6f}", language="text")
+                    st.caption("👆 مقدار دارایی (Qty) برای کپی در صرافی")
+
+    # --- تب دوم: محاسبه درصدی (کد بهینه‌شده قبلی) ---
+    with tab_percent:
+        col_sl_pct, col_risk_lvl = st.columns(2)
+        with col_sl_pct:
+            stop_loss_pct = st.number_input('فاصله حد ضرر (%)', 0.1, 100.0, 1.5, 0.1)
+        with col_risk_lvl:
+            risk_levels_str = st.text_input("سطوح ریسک (مثال: 1, 2, 3)", "0.5, 1, 2")
+
+        if st.button('محاسبه جدول', key='btn_pct'):
+            try:
+                r_levels = [float(x.strip()) for x in risk_levels_str.split(',') if x.strip()]
+                data = []
+                for r in r_levels:
+                    risk_amt = capital * (r / 100)
+                    pos_size = risk_amt / (stop_loss_pct / 100)
+                    margin_req = pos_size / leverage
+                    data.append({
+                        "ریسک (%)": f"{r}%",
+                        "ریسک ($)": f"${risk_amt:,.1f}",
+                        "حجم پوزیشن ($)": f"${pos_size:,.1f}",
+                        "مارجین ($)": f"${margin_req:,.1f}"
+                    })
+                
+                df = pd.DataFrame(data)
+                st.table(df)
+                st.info(f"💡 در این حالت، فاصله استاپ شما **{stop_loss_pct}%** از قیمت ورود فرض شده است.")
+            except:
+                st.error("فرمت ورودی ریسک صحیح نیست.")
+
+    # --- فوتر ---
+    st.markdown("---")
     st.markdown(
         """
-        <div style="text-align: center; padding: 15px; color: #666; font-size: 13px;">
-            <p style="margin: 5px 0;">ساخته شده با ❤️ توسط <strong>KanekiDevPro</strong></p>
-            <p style="margin: 5px 0;">
-                <a href="https://github.com/KanekiDevPro" target="_blank" style="color: #667eea; text-decoration: none; margin: 0 8px;">GitHub 🐙</a>
-            </p>
-            <p style="margin: 5px 0; font-size: 11px; color: #999;">نسخه 1.0 | © 2025</p>
+        <div style="text-align: center; color: #888; font-size: 12px;">
+            <p>این ابزار صرفاً جهت محاسبات ریاضی است و پیشنهاد مالی نیست.</p>
+            <p style='opacity: 0.6;'>نسخه حرفه‌ای 2.0</p>
         </div>
-        """,
-        unsafe_allow_html=True
+        """, unsafe_allow_html=True
     )
 
 if __name__ == "__main__":
