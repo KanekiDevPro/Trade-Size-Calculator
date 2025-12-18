@@ -218,7 +218,7 @@ def main():
         
         with col1:
             capital = st.number_input(
-                'سرمایه کل (USD)', 
+                'سرمایه کل (USDT)', 
                 min_value=0.01, 
                 value=1000.0, 
                 step=100.0,
