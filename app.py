@@ -23,7 +23,7 @@ def inject_custom_css():
             text-align: right;
         }
 
-        h1, h2, h3, h4 {
+        h1, h2, h3 {
             text-align: right !important;
         }
 
@@ -32,27 +32,31 @@ def inject_custom_css():
             text-align: right !important;
         }
 
-        /* --- DataFrame: force LTR & stable bidi --- */
-        div[data-testid="stDataFrame"],
-        div[data-testid="stDataFrame"] table {
+        /* ---- TABLE (STATIC, NO BUG) ---- */
+        table {
             direction: ltr !important;
+            border-collapse: collapse !important;
+            width: 100%;
         }
 
-        div[data-testid="stDataFrame"] table thead th {
-            text-align: center !important;
+        th {
+            background-color: #f0f2f6;
+            font-weight: 600;
+            padding: 10px;
+            text-align: center;
             white-space: nowrap;
         }
 
-        div[data-testid="stDataFrame"] table tbody th {
-            text-align: left !important;
+        td {
+            padding: 10px;
+            text-align: right;
             white-space: nowrap;
             unicode-bidi: plaintext;
         }
 
-        div[data-testid="stDataFrame"] table tbody td {
-            text-align: right !important;
-            white-space: nowrap;
-            unicode-bidi: plaintext;
+        th:first-child, td:first-child {
+            text-align: left;
+            font-weight: 600;
         }
 
         div[data-testid="stNumberInput"] input {
@@ -63,12 +67,6 @@ def inject_custom_css():
         div[data-testid="stTextInput"] input {
             direction: ltr !important;
             text-align: left !important;
-        }
-
-        div[data-testid="stMetric"],
-        div[data-testid="stCheckbox"] {
-            direction: rtl !important;
-            text-align: right !important;
         }
         </style>
         """,
@@ -153,7 +151,8 @@ def create_risk_management_table(
             else ["میزان ریسک ($)", "سایز پوزیشن ($)"]
         )
 
-        return pd.DataFrame(data, index=index), None
+        df = pd.DataFrame(data, index=index)
+        return df.applymap(lambda x: f"${x:,.2f}"), None
 
     except (InvalidOperation, ZeroDivisionError):
         return None, "خطا در محاسبات."
@@ -169,24 +168,17 @@ def main():
 
     c1, c2 = st.columns(2)
     with c1:
-        capital = st.number_input("سرمایه کل (USD)", min_value=0.01, value=1000.0, step=100.0)
+        capital = st.number_input("سرمایه کل (USD)", min_value=0.01, value=1000.0)
     with c2:
-        stop_loss_percentage = st.number_input(
-            "حد ضرر معامله (%)",
-            min_value=0.01,
-            max_value=99.99,
-            value=1.5,
-            step=0.1
-        )
+        stop_loss_percentage = st.number_input("حد ضرر (%)", min_value=0.01, value=1.5)
 
     use_leverage = st.checkbox("⚡ استفاده از اهرم", value=False)
     leverage = 1.0
     if use_leverage:
         leverage = st.number_input("اهرم (×)", min_value=1.0, max_value=125.0, value=10.0)
-        st.warning(f"⚠️ با اهرم {leverage:.0f}×، ریسک شما به همان نسبت افزایش می‌یابد.")
 
     risk_input = st.text_input(
-        "سطوح ریسک (%) - با کاما جدا کنید:",
+        "سطوح ریسک (%)",
         value="0.25, 0.5, 1, 2"
     )
 
@@ -208,21 +200,12 @@ def main():
             return
 
         st.success("✅ محاسبات انجام شد")
-
         st.subheader("📊 جدول سایز پوزیشن")
 
-        # ---- DataFrame with disabled column menu (FIX) ----
-        st.dataframe(
-            df.style.format("${:,.2f}"),
-            use_container_width=True,
-            hide_index=False,
-            column_config={
-                col: st.column_config.NumberColumn(col, disabled=True)
-                for col in df.columns
-            }
-        )
+        # 🔒 STATIC TABLE (NO BUG)
+        st.table(df)
 
-        st.info("💡 ردیف اول نشان‌دهنده حداکثر زیان مجاز در هر معامله است.")
+        st.info("💡 این جدول کاملاً نمایشی است و از بروز خطاهای RTL جلوگیری می‌کند.")
 
 if __name__ == "__main__":
     main()
