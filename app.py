@@ -9,7 +9,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# -------------------- CSS --------------------
+# ===================== CSS =====================
 @st.cache_data
 def inject_custom_css():
     st.markdown(
@@ -32,34 +32,25 @@ def inject_custom_css():
             text-align: right !important;
         }
 
-        /* ---------- DataFrame RTL/LTR FIX ---------- */
-        div[data-testid="stDataFrame"] {
-            direction: ltr !important;
-        }
-
+        /* --- DataFrame: force LTR & stable bidi --- */
+        div[data-testid="stDataFrame"],
         div[data-testid="stDataFrame"] table {
             direction: ltr !important;
-            border-collapse: collapse !important;
         }
 
         div[data-testid="stDataFrame"] table thead th {
             text-align: center !important;
-            background-color: #f0f2f6 !important;
-            font-weight: 600 !important;
-            padding: 12px 8px !important;
             white-space: nowrap;
         }
 
         div[data-testid="stDataFrame"] table tbody th {
             text-align: left !important;
-            font-weight: 600 !important;
             white-space: nowrap;
             unicode-bidi: plaintext;
         }
 
         div[data-testid="stDataFrame"] table tbody td {
             text-align: right !important;
-            padding: 10px 8px !important;
             white-space: nowrap;
             unicode-bidi: plaintext;
         }
@@ -74,11 +65,7 @@ def inject_custom_css():
             text-align: left !important;
         }
 
-        div[data-testid="stMetric"] {
-            direction: rtl !important;
-            text-align: right !important;
-        }
-
+        div[data-testid="stMetric"],
         div[data-testid="stCheckbox"] {
             direction: rtl !important;
             text-align: right !important;
@@ -88,7 +75,7 @@ def inject_custom_css():
         unsafe_allow_html=True,
     )
 
-# -------------------- Validation --------------------
+# ===================== Validation =====================
 def validate_inputs(
     capital: float,
     stop_loss_percentage: float,
@@ -117,7 +104,7 @@ def validate_inputs(
 
     return None
 
-# -------------------- Parse Risk --------------------
+# ===================== Parse Risk =====================
 def parse_risk_levels(risk_input: str) -> Tuple[Optional[List[float]], Optional[str]]:
     if not risk_input or not risk_input.strip():
         return None, "لطفاً سطوح ریسک را وارد کنید."
@@ -129,7 +116,7 @@ def parse_risk_levels(risk_input: str) -> Tuple[Optional[List[float]], Optional[
     except ValueError:
         return None, "فرمت سطوح ریسک نادرست است."
 
-# -------------------- Core Logic --------------------
+# ===================== Core Logic =====================
 def create_risk_management_table(
     capital: float,
     stop_loss_percentage: float,
@@ -171,7 +158,7 @@ def create_risk_management_table(
     except (InvalidOperation, ZeroDivisionError):
         return None, "خطا در محاسبات."
 
-# -------------------- UI --------------------
+# ===================== UI =====================
 def main():
     inject_custom_css()
 
@@ -223,7 +210,17 @@ def main():
         st.success("✅ محاسبات انجام شد")
 
         st.subheader("📊 جدول سایز پوزیشن")
-        st.dataframe(df.style.format("${:,.2f}"), use_container_width=True)
+
+        # ---- DataFrame with disabled column menu (FIX) ----
+        st.dataframe(
+            df.style.format("${:,.2f}"),
+            use_container_width=True,
+            hide_index=False,
+            column_config={
+                col: st.column_config.NumberColumn(col, disabled=True)
+                for col in df.columns
+            }
+        )
 
         st.info("💡 ردیف اول نشان‌دهنده حداکثر زیان مجاز در هر معامله است.")
 
