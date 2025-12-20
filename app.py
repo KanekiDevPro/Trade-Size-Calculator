@@ -3,7 +3,6 @@ import pandas as pd
 from typing import List, Tuple, Optional
 from decimal import Decimal, InvalidOperation
 import re
-import arabic_numerals
 
 st.set_page_config(
     page_title="ماشین حساب مدیریت سرمایه",
