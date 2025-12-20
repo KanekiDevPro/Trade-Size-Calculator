@@ -23,20 +23,15 @@ def inject_custom_css():
             text-align: right;
         }
 
-        h1, h2, h3 {
-            text-align: right !important;
-        }
-
         .stMarkdown, .stText, div[data-testid="stAlert"] {
             direction: rtl !important;
             text-align: right !important;
         }
 
-        /* ---- TABLE (STATIC, NO BUG) ---- */
         table {
             direction: ltr !important;
-            border-collapse: collapse !important;
             width: 100%;
+            border-collapse: collapse;
         }
 
         th {
@@ -54,7 +49,7 @@ def inject_custom_css():
             unicode-bidi: plaintext;
         }
 
-        th:first-child, td:first-child {
+        td:first-child, th:first-child {
             text-align: left;
             font-weight: 600;
         }
@@ -74,95 +69,54 @@ def inject_custom_css():
     )
 
 # ===================== Validation =====================
-def validate_inputs(
-    capital: float,
-    stop_loss_percentage: float,
-    risk_levels: List[float],
-    leverage: float
-) -> Optional[str]:
-
+def validate_inputs(capital, stop_loss_percentage, risk_levels, leverage):
     if capital <= 0:
         return "سرمایه باید بیشتر از صفر باشد."
-
-    if stop_loss_percentage < 0.01:
-        return "حد ضرر نمی‌تواند کمتر از ۰.۰۱٪ باشد."
-
-    if stop_loss_percentage >= 100:
-        return "درصد حد ضرر نمی‌تواند بیشتر یا مساوی ۱۰۰٪ باشد."
-
+    if stop_loss_percentage < 0.01 or stop_loss_percentage >= 100:
+        return "حد ضرر باید بین ۰.۰۱٪ تا ۱۰۰٪ باشد."
     if leverage < 1 or leverage > 125:
         return "اهرم باید بین ۱ تا ۱۲۵ باشد."
-
     if not risk_levels:
-        return "لطفاً حداقل یک سطح ریسک وارد کنید."
-
-    for r in risk_levels:
-        if r <= 0 or r >= 100:
-            return "سطوح ریسک باید بین ۰ و ۱۰۰ باشند."
-
+        return "حداقل یک سطح ریسک وارد کنید."
     return None
 
-# ===================== Parse Risk =====================
-def parse_risk_levels(risk_input: str) -> Tuple[Optional[List[float]], Optional[str]]:
-    if not risk_input or not risk_input.strip():
-        return None, "لطفاً سطوح ریسک را وارد کنید."
-
+def parse_risk_levels(text):
     try:
-        parts = risk_input.replace('،', ',').split(',')
-        risks = [float(p.strip()) for p in parts if p.strip()]
-        return sorted(set(risks)), None
-    except ValueError:
+        parts = text.replace('،', ',').split(',')
+        return sorted(set(float(p.strip()) for p in parts if p.strip())), None
+    except:
         return None, "فرمت سطوح ریسک نادرست است."
 
 # ===================== Core Logic =====================
-def create_risk_management_table(
-    capital: float,
-    stop_loss_percentage: float,
-    risk_levels: List[float],
-    leverage: float
-) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+def create_risk_management_table(capital, sl_pct, risks, leverage):
+    err = validate_inputs(capital, sl_pct, risks, leverage)
+    if err:
+        return None, err
 
-    error = validate_inputs(capital, stop_loss_percentage, risk_levels, leverage)
-    if error:
-        return None, error
+    capital_dec = Decimal(str(capital))
+    sl_factor = Decimal(str(sl_pct)) / Decimal("100")
+    leverage_dec = Decimal(str(leverage))
 
-    try:
-        capital_dec = Decimal(str(capital))
-        sl_factor = Decimal(str(stop_loss_percentage)) / Decimal("100")
-        leverage_dec = Decimal(str(leverage))
+    rows = []
 
-        data = {}
-        for r in risk_levels:
-            risk_factor = Decimal(str(r)) / Decimal("100")
-            dollar_risk = float(capital_dec * risk_factor)
-            position_size_dec = (capital_dec * risk_factor) / sl_factor
-            margin_required = float(position_size_dec / leverage_dec)
+    for label, calc in [
+        ("میزان ریسک ($)", lambda r: capital_dec * Decimal(r) / 100),
+        ("سایز پوزیشن ($)", lambda r: (capital_dec * Decimal(r) / 100) / sl_factor),
+        ("مارجین لازم ($)", lambda r: ((capital_dec * Decimal(r) / 100) / sl_factor) / leverage_dec),
+    ]:
+        row = {"شرح": label}
+        for r in risks:
+            row[f"{r}%"] = f"${calc(r):,.2f}"
+        rows.append(row)
 
-            col = f"{r}%"
-            data[col] = (
-                [dollar_risk, float(position_size_dec), margin_required]
-                if leverage > 1
-                else [dollar_risk, float(position_size_dec)]
-            )
-
-        index = (
-            ["میزان ریسک ($)", "سایز پوزیشن ($)", "مارجین لازم ($)"]
-            if leverage > 1
-            else ["میزان ریسک ($)", "سایز پوزیشن ($)"]
-        )
-
-        df = pd.DataFrame(data, index=index)
-        return df.applymap(lambda x: f"${x:,.2f}"), None
-
-    except (InvalidOperation, ZeroDivisionError):
-        return None, "خطا در محاسبات."
+    return pd.DataFrame(rows), None
 
 # ===================== UI =====================
 def main():
     inject_custom_css()
 
     st.title("🤖 ماشین حساب مدیریت سرمایه")
-    st.markdown("محاسبه دقیق **سایز پوزیشن** بر اساس سرمایه، ریسک و حد ضرر")
+    st.markdown("محاسبه دقیق **سایز پوزیشن** بر اساس مدیریت ریسک")
 
     st.divider()
 
@@ -170,31 +124,22 @@ def main():
     with c1:
         capital = st.number_input("سرمایه کل (USD)", min_value=0.01, value=1000.0)
     with c2:
-        stop_loss_percentage = st.number_input("حد ضرر (%)", min_value=0.01, value=1.5)
+        stop_loss = st.number_input("حد ضرر (%)", min_value=0.01, value=1.5)
 
-    use_leverage = st.checkbox("⚡ استفاده از اهرم", value=False)
+    use_leverage = st.checkbox("⚡ استفاده از اهرم")
     leverage = 1.0
     if use_leverage:
-        leverage = st.number_input("اهرم (×)", min_value=1.0, max_value=125.0, value=10.0)
+        leverage = st.number_input("اهرم", min_value=1.0, max_value=125.0, value=10.0)
 
-    risk_input = st.text_input(
-        "سطوح ریسک (%)",
-        value="0.25, 0.5, 1, 2"
-    )
+    risk_text = st.text_input("سطوح ریسک (%)", value="0.25, 0.5, 1, 2")
 
     if st.button("🧮 محاسبه کن", type="primary"):
-        risks, err = parse_risk_levels(risk_input)
+        risks, err = parse_risk_levels(risk_text)
         if err:
             st.error(err)
             return
 
-        df, err = create_risk_management_table(
-            capital,
-            stop_loss_percentage,
-            risks,
-            leverage
-        )
-
+        df, err = create_risk_management_table(capital, stop_loss, risks, leverage)
         if err:
             st.error(err)
             return
@@ -202,10 +147,7 @@ def main():
         st.success("✅ محاسبات انجام شد")
         st.subheader("📊 جدول سایز پوزیشن")
 
-        # 🔒 STATIC TABLE (NO BUG)
         st.table(df)
-
-        st.info("💡 این جدول کاملاً نمایشی است و از بروز خطاهای RTL جلوگیری می‌کند.")
 
 if __name__ == "__main__":
     main()
