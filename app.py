@@ -98,7 +98,7 @@ def inject_custom_css():
         unsafe_allow_html=True,
     )
 
-def validate_inputs(capital: float, stop_loss_percentage: float, risk_levels: List[float], leverage: float) -> Optional[str]:
+def validate_inputs(capital: float, stop_loss_percentage: float, risk_levels: List[float], leverage: float, take_profit_percentage: Optional[float] = None) -> Optional[str]:
     if capital <= 0:
         return "سرمایه باید بیشتر از صفر باشد."
 
@@ -107,6 +107,9 @@ def validate_inputs(capital: float, stop_loss_percentage: float, risk_levels: Li
 
     if stop_loss_percentage >= 100:
         return "درصد حد ضرر نمی‌تواند بیشتر یا مساوی ۱۰۰٪ باشد."
+
+    if take_profit_percentage is not None and take_profit_percentage <= 0:
+        return "درصد حد سود باید بیشتر از صفر باشد."
 
     if leverage < 1:
         return "اهرم باید حداقل ۱ باشد."
@@ -157,10 +160,11 @@ def create_risk_management_table(
     capital: float,
     stop_loss_percentage: float,
     risk_levels: List[float],
-    leverage: float = 1.0
+    leverage: float = 1.0,
+    take_profit_percentage: Optional[float] = None
 ) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
 
-    error = validate_inputs(capital, stop_loss_percentage, risk_levels, leverage)
+    error = validate_inputs(capital, stop_loss_percentage, risk_levels, leverage, take_profit_percentage)
     if error:
         return None, error
 
@@ -168,6 +172,7 @@ def create_risk_management_table(
         capital_dec = Decimal(str(capital))
         sl_factor = Decimal(str(stop_loss_percentage)) / Decimal('100')
         leverage_dec = Decimal(str(leverage))
+        tp_factor = Decimal(str(take_profit_percentage)) / Decimal('100') if take_profit_percentage else None
 
         data = {}
         for risk_percent in risk_levels:
@@ -190,6 +195,12 @@ def create_risk_management_table(
             else:
                 data[col_name] = [dollar_risk, position_size]
 
+            if tp_factor is not None:
+                reward_dec = position_size_dec * tp_factor
+                data[col_name].append(float(reward_dec))
+                rr = float(reward_dec / (capital_dec * risk_factor))
+                data[col_name].append(f"{rr:.2f}R")
+
         if leverage > 1:
             index_labels = [
                 '💰 میزان ریسک',
@@ -198,6 +209,9 @@ def create_risk_management_table(
             ]
         else:
             index_labels = ['💰 میزان ریسک', '📊 سایز پوزیشن']
+
+        if tp_factor is not None:
+            index_labels += ['💵 میزان سود', '⚖️ نسبت ریوارد/ریسک']
 
         df = pd.DataFrame(data, index=index_labels)
 
@@ -240,6 +254,15 @@ def main():
 
     use_leverage = st.checkbox('⚡️ استفاده از اهرم (Leverage)', value=False)
 
+    take_profit_percentage = st.number_input(
+        'حد سود معامله (٪)',
+        min_value=0.01,
+        value=3.0,
+        step=0.5,
+        format="%.2f",
+        help="درصد رشد قیمت تا حد سود (مثلاً ۳٪ یعنی TP در ۳٪ بالاتر از قیمت ورود)"
+    )
+
     leverage = 1.0
     if use_leverage:
         leverage = st.number_input(
@@ -271,7 +294,8 @@ def main():
             capital,
             stop_loss_percentage,
             risk_levels,
-            leverage
+            leverage,
+            take_profit_percentage
         )
 
         if calc_error:
@@ -296,7 +320,12 @@ def main():
             st.subheader("📊 جدول سایز پوزیشن")
 
             st.dataframe(
-                table_df.style.format("${:,.2f}"),
+                table_df.style.format(
+                    "${:,.2f}",
+                    subset=pd.IndexSlice[
+                        [i for i in table_df.index if '⚖️' not in i], :
+                    ],
+                ),
                 use_container_width=True
             )
 
@@ -307,6 +336,9 @@ def main():
                 st.info(f"💳 ردیف سوم (مارجین لازم با اهرم {leverage:.0f}×): با استفاده از اهرم {leverage:.0f}×، فقط کافیه این مقدار (سایز پوزیشن ÷ {leverage:.0f}) از سرمایه‌ات رو وارد کنی!")
             else:
                 st.info("🚀 ردیف دوم (سایز پوزیشن): این مقدار نشان‌دهنده ارزش کل دلاری است که باید با آن وارد معامله شوید تا در صورت فعال شدن حد ضرر، دقیقا مبلغ ردیف اول را از دست بدهید.")
+
+            st.info(f"💵 ردیف سود: اگر قیمت به حد سود ({take_profit_percentage:.2f}٪) برسد، این مبلغ را سود می‌کنید.")
+            st.info("⚖️ نسبت ریوارد/ریسک: سود تقسیم بر ریسک. بالای 2R یعنی معامله ارزشش را دارد.")
 
             st.caption("💡 این محاسبات بر اساس فرمول‌های استاندارد مدیریت ریسک در بازارهای مالی انجام شده‌اند.")
 
