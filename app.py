@@ -104,7 +104,6 @@ def inject_custom_css():
 
 
 # ─── پشتیبانی از اعداد فارسی/عربی ───
-# ارقام فارسی (۰-۹) و عربی (٠-٩) → ASCII
 DIGIT_TRANSLATION = str.maketrans(
     "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
     "01234567890123456789",
@@ -113,26 +112,13 @@ DIGIT_TRANSLATION = str.maketrans(
 
 def normalize_risk_input(text: str) -> str:
     """تبدیل ورودی فارسی/عربی به فرمت قابل پردازش."""
-    # اعداد تمام‌عرض و فرم‌های سازگار
     text = unicodedata.normalize("NFKC", text)
-
-    # حذف کاراکترهای نامرئی (ZWNJ، علائم جهت RTL/LTR، BOM)
     text = re.sub(r"[\u200c\u200d\u200e\u200f\ufeff]", "", text)
-
-    # ارقام فارسی و عربی → انگلیسی
     text = text.translate(DIGIT_TRANSLATION)
-
-    # ممیز عربی: ۱٫۵ → 1.5
     text = text.replace("٫", ".")
-
-    # ممیز ایرانی فقط بین دو رقم: ۰/۲۵ → 0.25
-    # (اسلش‌های دیگر دست‌نخورده می‌مانند و در ادامه خطای واضح می‌گیرند)
     text = re.sub(r"(?<=\d)/(?=\d)", ".", text)
-
-    # کامای فارسی = جداکننده لیست
     text = text.replace("،", ",")
 
-    # جداکننده هزارگان: عمداً خطا (ریسک < 100 است؛ ۱٬۰۰۰ یعنی کاربر اشتباه تایپ کرده)
     if "٬" in text:
         raise ValueError("از جداکننده هزارگان (٬) استفاده نکنید؛ سطوح ریسک را با کاما جدا کنید.")
 
@@ -149,6 +135,7 @@ def validate_inputs(
     risk_levels: List[float],
     leverage: float,
     take_profit_percentage: Optional[float] = None,
+    mmr_percentage: Optional[float] = None,
 ) -> Optional[str]:
     if not math.isfinite(capital) or capital <= 0:
         return "سرمایه باید عددی معتبر و بیشتر از صفر باشد."
@@ -168,6 +155,12 @@ def validate_inputs(
 
     if leverage > 125:
         return "اهرم نمی‌تواند بیشتر از ۱۲۵ باشد."
+
+    if mmr_percentage is not None:
+        if not math.isfinite(mmr_percentage) or mmr_percentage < 0:
+            return "نرخ مارجین نگهداری باید عددی معتبر و حداقل صفر باشد."
+        if mmr_percentage >= 100:
+            return "نرخ مارجین نگهداری نمی‌تواند بیشتر یا مساوی ۱۰۰٪ باشد."
 
     if not risk_levels:
         return "لطفاً حداقل یک سطح ریسک وارد کنید."
@@ -221,8 +214,9 @@ def compute_results(
     risk_levels: List[float],
     leverage: float,
     take_profit_percentage: Optional[float],
+    mmr_percentage: Optional[float] = None,
 ) -> dict:
-    """محاسبه جدول نمایشی (تمام مقادیر رشته) + هشدارهای سایز/مارجین + فاصله لیکویید."""
+    """جدول نمایشی + هشدارهای سایز/مارجین + فاصله لیکویید (با MMR اختیاری)."""
 
     capital_dec = Decimal(str(capital))
     sl_factor = Decimal(str(stop_loss_percentage)) / Decimal('100')
@@ -242,7 +236,7 @@ def compute_results(
         position_size = dollar_risk / sl_factor
         margin_required = position_size / leverage_dec
 
-        # ⚠️ هشدار سایز/مارجین بیشتر از سرمایه (مقایسه Decimal دقیق، قبل از گرد کردن)
+        # ⚠️ هشدار سایز/مارجین بیشتر از سرمایه (مقایسه Decimal دقیق)
         if leverage > 1 and margin_required > capital_dec:
             warnings.append(
                 f"⚠️ سطح ریسک {risk_percent}%: مارجین لازم ({fmt_money(margin_required)}) "
@@ -274,30 +268,46 @@ def compute_results(
     if tp_factor is not None:
         index_labels += ['💵 میزان سود', '⚖️ نسبت ریوارد/ریسک']
 
-    # 💀 فاصله تقریبی تا لیکویید (مارجین ایزوله؛ بدون MMR، کارمزد و فاندینگ)
+    # 💀 فاصله تقریبی تا لیکویید: 100/اهرم − MMR (اگر کاربر وارد کرده باشد)
     liq_distance_pct = None
     liq_status = None
     liq_message = None
+    mmr_used_pct = None
     if leverage > 1:
-        liq_distance_pct = 100.0 / leverage
+        mmr_used_pct = mmr_percentage if mmr_percentage is not None else None
 
-        if stop_loss_percentage >= liq_distance_pct:
+        if mmr_used_pct is not None:
+            mmr_factor = Decimal(str(mmr_used_pct)) / Decimal('100')
+            liq_distance_dec = (Decimal('1') / leverage_dec - mmr_factor) * Decimal('100')
+            liq_distance_pct = float(liq_distance_dec)
+        else:
+            liq_distance_pct = 100.0 / leverage
+
+        mmr_note = f" (با MMR {mmr_used_pct:.2f}٪)" if mmr_used_pct is not None else ""
+
+        if liq_distance_pct <= 0:
             liq_status = "danger"
             liq_message = (
-                f"🚨 فاصله لیکویید (~{liq_distance_pct:.2f}٪) کمتر یا مساوی حد ضرر "
+                f"🚨 ترکیب اهرم {leverage:.0f}× و MMR {mmr_used_pct:.2f}٪ هیچ حاشیه تقریبی "
+                f"برای لیکویید باقی نمی‌گذارد. این پوزیشن عملاً قابل معامله نیست."
+            )
+        elif stop_loss_percentage >= liq_distance_pct:
+            liq_status = "danger"
+            liq_message = (
+                f"🚨 فاصله لیکویید (~{liq_distance_pct:.2f}٪{mmr_note}) کمتر یا مساوی حد ضرر "
                 f"({stop_loss_percentage:.2f}٪) است! پوزیشن قبل از فعال شدن SL لیکویید می‌شود."
             )
         elif stop_loss_percentage >= 0.8 * liq_distance_pct:
             liq_status = "caution"
             liq_message = (
                 f"⚠️ حد ضرر ({stop_loss_percentage:.2f}٪) خیلی نزدیک به فاصله لیکویید "
-                f"(~{liq_distance_pct:.2f}٪) است. حاشیه خطای کمی دارید."
+                f"(~{liq_distance_pct:.2f}٪{mmr_note}) است. حاشیه خطای کمی دارید."
             )
         else:
             liq_status = "ok"
             liq_message = (
                 f"✅ حد ضرر ({stop_loss_percentage:.2f}٪) قبل از لیکویید تقریبی "
-                f"(~{liq_distance_pct:.2f}٪) فعال می‌شود."
+                f"(~{liq_distance_pct:.2f}٪{mmr_note}) فعال می‌شود."
             )
 
     return {
@@ -312,6 +322,7 @@ def compute_results(
             "leverage": leverage,
             "use_leverage": leverage > 1,
             "tp": take_profit_percentage,
+            "mmr": mmr_used_pct,
             "n_levels": len(risk_levels),
         },
     }
@@ -370,6 +381,7 @@ def main():
         take_profit_percentage = tp_input
 
     leverage = 1.0
+    mmr_percentage = None
     if use_leverage:
         leverage = st.number_input(
             'مقدار اهرم (×)',
@@ -381,6 +393,21 @@ def main():
             help="اهرم معاملاتی (مثلاً 10× یعنی ده برابر قدرت خرید)"
         )
         st.warning(f"⚠️ هشدار: با اهرم {leverage:.0f}×، فاصله تا لیکویید شدن کمتر می‌شود. سایز پوزیشن را حتماً طبق جدول تنظیم کنید!")
+
+        use_mmr = st.checkbox('🧯 وارد کردن نرخ مارجین نگهداری صرافی (MMR)', value=False)
+
+        mmr_input = st.number_input(
+            'نرخ مارجین نگهداری (MMR ٪)',
+            min_value=0.0,
+            max_value=99.99,
+            value=0.5,
+            step=0.1,
+            format="%.2f",
+            disabled=not use_mmr,
+            help="نرخ مارجین نگهداری صرافی شما (درصدی از ارزش پوزیشن). مثلاً بایننس معمولاً ۰.۴٪ تا ۰.۵٪ برای پوزیشن‌های کوچک. عدد دقیق را از صفحه ریسک صرافی خودتان چک کنید."
+        )
+        if use_mmr:
+            mmr_percentage = mmr_input
 
     risk_inputs_str = st.text_input(
         "سطوح ریسک مورد نظر (٪) - با کاما جدا کنید:",
@@ -395,14 +422,16 @@ def main():
             st.session_state.result = {"error": parse_error}
         else:
             validation_error = validate_inputs(
-                capital, stop_loss_percentage, risk_levels, leverage, take_profit_percentage
+                capital, stop_loss_percentage, risk_levels, leverage,
+                take_profit_percentage, mmr_percentage
             )
             if validation_error:
                 st.session_state.result = {"error": validation_error}
             else:
                 try:
                     st.session_state.result = compute_results(
-                        capital, stop_loss_percentage, risk_levels, leverage, take_profit_percentage
+                        capital, stop_loss_percentage, risk_levels, leverage,
+                        take_profit_percentage, mmr_percentage
                     )
                 except (InvalidOperation, ValueError, ZeroDivisionError) as e:
                     st.session_state.result = {"error": f"خطا در محاسبات: {str(e)}"}
@@ -439,7 +468,6 @@ def main():
     st.divider()
     st.subheader("📊 جدول سایز پوزیشن")
 
-    # جدول نمایشی تمام-رشته‌ای است؛ بدون Styler
     st.dataframe(table_df, use_container_width=True, hide_index=False)
 
     # ⚠️ هشدارهای سایز/مارجین بیشتر از سرمایه
@@ -456,10 +484,14 @@ def main():
         else:
             st.info(result["liq_message"])
 
+        mmr_part = (
+            f"فرمول: 100 ÷ اهرم − MMR ({snap['mmr']:.2f}٪)."
+            if snap["mmr"] is not None
+            else "فرمول: 100 ÷ اهرم (بدون MMR — برای دقت بیشتر MMR صرافی‌تان را وارد کنید)."
+        )
         st.caption(
-            "💡 فرمول تقریبی: 100 ÷ اهرم. مقدار واقعی به Maintenance Margin صرافی، کارمزد، "
-            "فاندینگ و مارجین اضافه‌شده بستگی دارد (تقریب دقیق‌تر: 100/اهرم − MMR). "
-            "همچنین صرافی‌ها معمولاً بر اساس قیمت Mark لیکویید می‌کنند، نه قیمت Last."
+            f"💡 {mmr_part} مقدار واقعی به سطح ریسک پوزیشن، کارمزد، فاندینگ و "
+            "مارجین اضافه‌شده هم بستگی دارد. صرافی‌ها معمولاً بر اساس قیمت Mark لیکویید می‌کنند."
         )
 
     st.info("💡 ردیف اول (میزان ریسک دلاری): این مقدار نشان‌دهنده حداکثر مبلغی است که شما مجازید در این معامله، در صورت رسیدن به حد ضرر، از دست بدهید.")
