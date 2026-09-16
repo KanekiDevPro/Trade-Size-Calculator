@@ -7,6 +7,13 @@ import streamlit as st
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 from typing import List, Optional, Tuple
 
+try:
+    import ccxt
+    CCXT_AVAILABLE = True
+except ImportError:
+    ccxt = None
+    CCXT_AVAILABLE = False
+
 st.set_page_config(
     page_title="ماشین حساب مدیریت سرمایه",
     page_icon="🤖",
@@ -129,6 +136,71 @@ def fmt_money(value: Decimal) -> str:
     return f"${float(value):,.2f}"
 
 
+# ─── اتصال به صرافی‌ها (فقط داده عمومی بازار؛ بدون API key) ───
+EXCHANGE_OPTIONS = ["bybit", "kucoin", "mexc", "okx", "binance"]
+
+FUTURES_CCXT_ID = {
+    # برای فیوچرز، صرافی‌هایی که spot/futures اکسچنج جدا دارند
+    "binance": "binanceusdm",
+    "kucoin": "kucoinfutures",
+}
+
+
+def _make_exchange(exchange_id: str, market_type: str):
+    if market_type == "future":
+        ccxt_id = FUTURES_CCXT_ID.get(exchange_id, exchange_id)
+    else:
+        ccxt_id = exchange_id
+    exchange = getattr(ccxt, ccxt_id)({"enableRateLimit": True})
+    if market_type == "future":
+        exchange.options["defaultType"] = "swap"
+    return exchange
+
+
+def _resolve_symbol(exchange, symbol: str, market_type: str) -> str:
+    if symbol in exchange.markets:
+        return symbol
+    if market_type == "future" and ":" not in symbol:
+        candidate = f"{symbol}:USDT"   # قراردادهای پایپرپچوال ccxt: BTC/USDT:USDT
+        if candidate in exchange.markets:
+            return candidate
+    raise ValueError(f"نماد '{symbol}' در این صرافی پیدا نشد.")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_market_rules(exchange_id: str, market_type: str, symbol: str):
+    """stepSize و minQty حجم — قوانین صرافی که به‌ندرت عوض می‌شوند (کش ۱ ساعته)."""
+    exchange = _make_exchange(exchange_id, market_type)
+    exchange.load_markets()
+    resolved = _resolve_symbol(exchange, symbol, market_type)
+    market = exchange.market(resolved)
+
+    prec = market["precision"].get("amount")
+    if prec is None:
+        raise ValueError("این صرافی اطلاعات دقت حجم را ارائه نمی‌دهد.")
+
+    # precisionMode تعیین می‌کند prec تعداد اعشار است یا خودِ اندازه گام
+    if exchange.precisionMode == ccxt.TICK_SIZE:
+        step = Decimal(str(prec))
+    else:
+        step = Decimal(1).scaleb(-int(prec))
+
+    min_qty = market["limits"]["amount"].get("min")
+    return resolved, step, (Decimal(str(min_qty)) if min_qty else None)
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def fetch_current_price(exchange_id: str, market_type: str, symbol: str):
+    """آخرین قیمت نماد (کش ۱۵ ثانیه — قیمت برای معامله باید تازه باشد)."""
+    exchange = _make_exchange(exchange_id, market_type)
+    exchange.load_markets()
+    resolved = _resolve_symbol(exchange, symbol, market_type)
+    ticker = exchange.fetch_ticker(resolved)
+    if ticker.get("last") is None:
+        raise ValueError("قیمتی برای این نماد دریافت نشد.")
+    return resolved, Decimal(str(ticker["last"]))
+
+
 def validate_inputs(
     capital: float,
     stop_loss_percentage: float,
@@ -244,8 +316,9 @@ def compute_results(
     quantity_step: Optional[float] = None,
     fee_percentage: Optional[float] = None,
     slippage_percentage: Optional[float] = None,
+    min_qty: Optional[float] = None,
 ) -> dict:
-    """جدول + هشدارها + لیکویید + گرد کردن حجم + کارمزد/اسلیپیج (Long و Short)."""
+    """جدول + هشدارها + لیکویید + گرد کردن حجم (+چک minQty) + کارمزد/اسلیپیج."""
 
     capital_dec = Decimal(str(capital))
     sl_factor = Decimal(str(stop_loss_percentage)) / Decimal('100')
@@ -270,6 +343,7 @@ def compute_results(
     qty_enabled = entry_price is not None and quantity_step is not None
     entry_dec = Decimal(str(entry_price)) if qty_enabled else None
     step_dec = Decimal(str(quantity_step)) if qty_enabled else None
+    min_qty_dec = Decimal(str(min_qty)) if (min_qty is not None and min_qty > 0) else None
     qty_decimals = max(0, -step_dec.as_tuple().exponent) if qty_enabled else 0
 
     is_short = direction == "short"
@@ -303,6 +377,12 @@ def compute_results(
                 )
                 values += [qty_str, fmt_money(Decimal('0')), fmt_money(Decimal('0'))]
             else:
+                if min_qty_dec is not None and qty < min_qty_dec:
+                    warnings.append(
+                        f"⚠️ سطح ریسک {risk_percent}%: حجم {qty_str} از حداقل حجم مجاز صرافی "
+                        f"(minQty = {float(min_qty_dec):g}) کمتر است — سفارش رد می‌شود!"
+                    )
+
                 actual_size = qty * entry_dec
                 entry_eff = entry_dec * (Decimal('1') - slip_factor) if fees_on else entry_dec
                 E = entry_dec
@@ -391,8 +471,7 @@ def compute_results(
             '📉 R:R خالص' if fees_on else '⚖️ نسبت ریوارد/ریسک',
         ]
 
-    # 💀 فاصله تقریبی تا لیکویید: 100/اهرم − MMR (درصد حرکت علیه پوزیشن)
-    # Long: قیمت پایین می‌رود؛ Short: قیمت بالا می‌رود — درصد یکسان است
+    # 💀 فاصله تقریبی تا لیکویید: 100/اهرم − MMR
     liq_distance_pct = None
     liq_status = None
     liq_message = None
@@ -448,9 +527,11 @@ def compute_results(
             "qty_enabled": qty_enabled,
             "entry_price": entry_price,
             "qty_step": quantity_step,
+            "min_qty": min_qty,
             "fees_on": fees_on,
             "fee": fee_percentage,
             "slippage": slippage_percentage,
+            "fetched_from": st.session_state.get("fetched_from"),
             "n_levels": len(risk_levels),
         },
     }
@@ -546,23 +627,80 @@ def main():
         if use_mmr:
             mmr_percentage = mmr_input
 
-    # ─── گرد کردن حجم ───
+    # ─── گرد کردن حجم + دریافت خودکار از صرافی ───
     use_qty = st.checkbox(
-        '🪙 گرد کردن حجم به stepSize صرافی (نیاز به قیمت ورود دارد)',
+        '🪙 گرد کردن حجم به stepSize صرافی',
         value=False,
-        help="برای اینکه عدد جدول مستقیماً قابل اجرا باشد. stepSize را از مشخصات نماد در صرافی (فیلد LOT_SIZE) بردارید."
+        help="حجم را به مضرب stepSize صرافی گرد می‌کند تا عدد جدول مستقیماً قابل اجرا باشد. قیمت ورود و stepSize را می‌توانید خودکار از صرافی بگیرید یا دستی وارد کنید."
     )
 
     entry_price = None
     quantity_step = None
     if use_qty:
+        if not CCXT_AVAILABLE:
+            st.info("📦 برای دریافت خودکار از صرافی، پکیج ccxt را نصب کنید: `pip install ccxt` — فعلاً می‌توانید دستی وارد کنید.")
+        else:
+            st.markdown("**🔄 دریافت خودکار از صرافی (بدون نیاز به API key):**")
+            fc1, fc2 = st.columns(2)
+
+            with fc1:
+                exchange_id = st.selectbox(
+                    'صرافی',
+                    EXCHANGE_OPTIONS,
+                    index=0,
+                    format_func=lambda x: x.title(),
+                    help="بایننس ممکن است از برخی سرورها (مثل Streamlit Cloud) geo-block باشد؛ Bybit و KuCoin معمولاً در دسترس‌ترند."
+                )
+
+            with fc2:
+                market_type = st.selectbox(
+                    'نوع بازار',
+                    ['spot', 'future'],
+                    format_func=lambda x: 'اسپات' if x == 'spot' else 'فیوچرز (پایپرپچوال)'
+                )
+
+            symbol = st.text_input(
+                'نماد (فرمت ccxt، مثل BTC/USDT)',
+                value='BTC/USDT',
+                help="برای فیوچرز اگر نماد پیدا نشود، خودکار پسوند :USDT امتحان می‌شود (مثل BTC/USDT:USDT)."
+            )
+
+            if st.button('🔄 دریافت قیمت و stepSize از صرافی'):
+                sym = symbol.strip().upper().replace('-', '/')
+                if not sym:
+                    st.error("❌ نماد را وارد کنید.")
+                else:
+                    try:
+                        resolved, step_dec_fetched, min_q = fetch_market_rules(exchange_id, market_type, sym)
+                        resolved_p, price_dec = fetch_current_price(exchange_id, market_type, sym)
+
+                        # مقداردهی قبل از ساخت widgetها → بدون نیاز به rerun
+                        st.session_state["entry_price_input"] = float(price_dec)
+                        st.session_state["quantity_step_input"] = float(step_dec_fetched)
+                        st.session_state["min_qty_fetched"] = float(min_q) if min_q else None
+                        st.session_state["fetched_from"] = (
+                            f"{exchange_id.title()} • {resolved} • قیمت {float(price_dec):g} • "
+                            f"stepSize {float(step_dec_fetched):g} • "
+                            f"minQty {float(min_q):g}" if min_q else f"minQty —"
+                        )
+                        st.success(f"✅ از {resolved} دریافت شد: قیمت {float(price_dec):g} | stepSize {float(step_dec_fetched):g} | minQty {float(min_q):g if min_q else '—'}")
+                    except Exception as e:
+                        st.error(
+                            f"❌ دریافت اطلاعات ناموفق بود: {e}\n\n"
+                            f"💡 اگر خطای شبکه/دسترسی است (geo-block)، صرافی دیگری را امتحان کنید یا مقادیر را دستی وارد کنید."
+                        )
+
+            if st.session_state.get("fetched_from"):
+                st.caption(f"📡 داده صرافی: {st.session_state['fetched_from']} — اگر نماد را عوض کردید، دوباره دریافت کنید.")
+
         entry_price = st.number_input(
             'قیمت ورود (USD)',
             min_value=0.0001,
             value=100.0,
             step=0.1,
             format="%.6f",
-            help="قیمتی که قصد ورود به معامله را دارید. حجم = سایز پوزیشن ÷ این قیمت"
+            key="entry_price_input",
+            help="قیمتی که قصد ورود به معامله را دارید. حجم = سایز پوزیشن ÷ این قیمت. عدد دریافت‌شده از صرافی قابل ویرایش است."
         )
 
         quantity_step = st.number_input(
@@ -571,7 +709,8 @@ def main():
             value=0.001,
             step=0.001,
             format="%.6f",
-            help="کوچک‌ترین گام مجاز حجم در صرافی. مثلاً 0.001 یعنی حجم باید مضربی از 0.001 باشد."
+            key="quantity_step_input",
+            help="کوچک‌ترین گام مجاز حجم در صرافی (فیلد LOT_SIZE). عدد دریافت‌شده قابل ویرایش است."
         )
 
     # ─── کارمزد و اسلیپیج ───
@@ -632,7 +771,8 @@ def main():
                     st.session_state.result = compute_results(
                         capital, stop_loss_percentage, risk_levels, leverage,
                         take_profit_percentage, direction, mmr_percentage,
-                        entry_price, quantity_step, fee_percentage, slippage_percentage
+                        entry_price, quantity_step, fee_percentage, slippage_percentage,
+                        min_qty=st.session_state.get("min_qty_fetched")
                     )
                 except (InvalidOperation, ValueError, ZeroDivisionError) as e:
                     st.session_state.result = {"error": f"خطا در محاسبات: {str(e)}"}
@@ -700,6 +840,7 @@ def main():
         st.info(
             f"🪙 ردیف حجم: سایز پوزیشن ÷ قیمت ورود ({snap['entry_price']:g}) و گرد شده به پایین "
             f"تا مضرب stepSize ({snap['qty_step']:g}) — دقیقاً همان عددی که در صرافی وارد می‌کنید."
+            + (f" چک minQty ({snap['min_qty']:g}) هم انجام شده است." if snap["min_qty"] else "")
         )
     else:
         st.info("💡 ردیف اول (میزان ریسک دلاری): حداکثر مبلغی که در صورت رسیدن به حد ضرر از دست می‌دهید.")
