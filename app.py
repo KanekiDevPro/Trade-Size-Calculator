@@ -138,6 +138,8 @@ def validate_inputs(
     mmr_percentage: Optional[float] = None,
     entry_price: Optional[float] = None,
     quantity_step: Optional[float] = None,
+    fee_percentage: Optional[float] = None,
+    slippage_percentage: Optional[float] = None,
 ) -> Optional[str]:
     if not math.isfinite(capital) or capital <= 0:
         return "سرمایه باید عددی معتبر و بیشتر از صفر باشد."
@@ -171,6 +173,18 @@ def validate_inputs(
     if quantity_step is not None:
         if not math.isfinite(quantity_step) or quantity_step <= 0:
             return "stepSize باید عددی معتبر و بیشتر از صفر باشد."
+
+    if fee_percentage is not None:
+        if not math.isfinite(fee_percentage) or fee_percentage < 0:
+            return "کارمزد باید عددی معتبر و حداقل صفر باشد."
+        if fee_percentage >= 10:
+            return "کارمزد نمی‌تواند بیشتر یا مساوی ۱۰٪ باشد."
+
+    if slippage_percentage is not None:
+        if not math.isfinite(slippage_percentage) or slippage_percentage < 0:
+            return "اسلیپیج باید عددی معتبر و حداقل صفر باشد."
+        if slippage_percentage >= 10:
+            return "اسلیپیج نمی‌تواند بیشتر یا مساوی ۱۰٪ باشد."
 
     if not risk_levels:
         return "لطفاً حداقل یک سطح ریسک وارد کنید."
@@ -224,11 +238,14 @@ def compute_results(
     risk_levels: List[float],
     leverage: float,
     take_profit_percentage: Optional[float],
+    direction: str = "long",
     mmr_percentage: Optional[float] = None,
     entry_price: Optional[float] = None,
     quantity_step: Optional[float] = None,
+    fee_percentage: Optional[float] = None,
+    slippage_percentage: Optional[float] = None,
 ) -> dict:
-    """جدول نمایشی + هشدارها + لیکویید + گرد کردن حجم به stepSize صرافی."""
+    """جدول + هشدارها + لیکویید + گرد کردن حجم + کارمزد/اسلیپیج (Long و Short)."""
 
     capital_dec = Decimal(str(capital))
     sl_factor = Decimal(str(stop_loss_percentage)) / Decimal('100')
@@ -238,27 +255,42 @@ def compute_results(
         if take_profit_percentage is not None
         else None
     )
+    fee_factor = (
+        Decimal(str(fee_percentage)) / Decimal('100')
+        if fee_percentage is not None
+        else None
+    )
+    slip_factor = (
+        Decimal(str(slippage_percentage)) / Decimal('100')
+        if slippage_percentage is not None
+        else None
+    )
+    fees_on = fee_factor is not None and slip_factor is not None
 
-    # تنظیمات گرد کردن حجم (فقط وقتی قیمت ورود و step هر دو داده شده باشند)
     qty_enabled = entry_price is not None and quantity_step is not None
     entry_dec = Decimal(str(entry_price)) if qty_enabled else None
     step_dec = Decimal(str(quantity_step)) if qty_enabled else None
-    # تعداد اعشار نمایش حجم از exponent خود step درمی‌آید (0.001 → ۳ اعشار)
     qty_decimals = max(0, -step_dec.as_tuple().exponent) if qty_enabled else 0
+
+    is_short = direction == "short"
 
     warnings: List[str] = []
     data = {}
 
     for risk_percent in risk_levels:
         risk_factor = Decimal(str(risk_percent)) / Decimal('100')
-        dollar_risk = capital_dec * risk_factor          # ریسک برنامه‌ریزی‌شده
-        position_size = dollar_risk / sl_factor          # سایز پوزیشن محاسباتی
+        dollar_risk = capital_dec * risk_factor
+        position_size = dollar_risk / sl_factor
 
         col_name = f"{risk_percent}%"
         values = [fmt_money(dollar_risk)]
 
+        real_loss: Optional[Decimal] = None
+        qty: Optional[Decimal] = None
+        actual_size: Optional[Decimal] = None
+        entry_eff: Optional[Decimal] = None
+
         if qty_enabled:
-            # حجم = سایز ÷ قیمت ورود، گرد شده به پایین تا مضرب step
             raw_qty = position_size / entry_dec
             units = (raw_qty / step_dec).to_integral_value(rounding=ROUND_DOWN)
             qty = units * step_dec
@@ -270,86 +302,133 @@ def compute_results(
                     f"({quantity_step}) کمتر است و قابل اجرا نیست!"
                 )
                 values += [qty_str, fmt_money(Decimal('0')), fmt_money(Decimal('0'))]
-                actual_size = Decimal('0')
-                actual_risk = Decimal('0')
             else:
-                actual_size = qty * entry_dec            # سایز واقعی قابل اجرا
-                actual_risk = actual_size * sl_factor    # ریسک واقعی بعد از گرد کردن
-                values += [qty_str, fmt_money(actual_size), fmt_money(actual_risk)]
+                actual_size = qty * entry_dec
+                entry_eff = entry_dec * (Decimal('1') - slip_factor) if fees_on else entry_dec
+                E = entry_dec
+                s, sl = slip_factor, sl_factor
+
+                if fees_on:
+                    # Short: ورود بدتر = ارزان‌تر، خروج بدتر = گران‌تر
+                    exit_sl = E * (Decimal('1') + sl) * (Decimal('1') + s)
+                    loss_per_unit = exit_sl - entry_eff + fee_factor * (entry_eff + exit_sl)
+                    real_loss = qty * loss_per_unit
+                else:
+                    real_loss = actual_size * sl_factor
+
+                values += [qty_str, fmt_money(actual_size), fmt_money(real_loss)]
         else:
-            actual_size = position_size
             values.append(fmt_money(position_size))
 
+            if fees_on:
+                # بدون قیمت ورود: قیمت نمادین E=1 — ریسک دلاری دقیق می‌ماند
+                E = Decimal('1')
+                s, sl = slip_factor, sl_factor
+                entry_eff = E * (Decimal('1') - s)
+                exit_sl = E * (Decimal('1') + sl) * (Decimal('1') + s)
+                loss_per_unit = exit_sl - entry_eff + fee_factor * (entry_eff + exit_sl)
+                qty_base = position_size / entry_eff
+                real_loss = qty_base * loss_per_unit
+                values.append(fmt_money(real_loss))
+
         if leverage > 1:
-            margin_required = actual_size / leverage_dec
-            values.append(fmt_money(margin_required))
+            margin_base = actual_size if qty_enabled and qty else position_size
+            values.append(fmt_money(margin_base / leverage_dec))
 
         if tp_factor is not None:
-            reward = actual_size * tp_factor
-            values.append(fmt_money(reward))
-            if actual_risk > 0:
-                rr = reward / actual_risk
-                values.append(f"{float(rr):.2f}R")
+            if fees_on and real_loss is not None and real_loss > 0:
+                E = entry_dec if qty_enabled else Decimal('1')
+                s, sl, tp = slip_factor, sl_factor, tp_factor
+                exit_tp = E * (Decimal('1') - tp) * (Decimal('1') + s)
+                reward_per_unit = (
+                    entry_eff - exit_tp - fee_factor * (entry_eff + exit_tp)
+                )
+                qty_exec = qty if qty_enabled and qty else position_size / entry_eff
+                net_reward = qty_exec * reward_per_unit
+
+                if net_reward > 0:
+                    values.append(fmt_money(net_reward))
+                    rr = net_reward / real_loss
+                    values.append(f"{float(rr):.2f}R")
+                else:
+                    values.append("❌ منفی")
+                    values.append("—")
+                    warnings.append(
+                        f"❌ سطح ریسک {risk_percent}%: با کارمزد {fee_percentage}٪ و اسلیپیج "
+                        f"{slippage_percentage}٪، حتی رسیدن به حد سود هم سود خالص ندارد!"
+                    )
+            elif fees_on:
+                values += [fmt_money(Decimal('0')), "—"]
             else:
-                values.append("—")
+                reward_base = actual_size if qty_enabled and qty else position_size
+                reward = reward_base * tp_factor
+                values.append(fmt_money(reward))
+                denom = real_loss if real_loss else dollar_risk
+                rr = reward / denom
+                values.append(f"{float(rr):.2f}R")
 
         data[col_name] = values
 
-    # ساخت برچسب ردیف‌ها هماهنگ با ستون‌ها
-    index_labels = ['💰 ریسک برنامه‌ریزی‌شده']
+    # ─── برچسب ردیف‌ها ───
+    direction_label = '🔻 پوزیشن Short' if is_short else '🔺 پوزیشن Long'
+    index_labels = [f'{direction_label} — 💰 ریسک برنامه‌ریزی‌شده']
     if qty_enabled:
         index_labels += [
             f'🪙 حجم (واحد ارز، گرد به {quantity_step})',
             '📏 سایز واقعی بعد از گرد کردن',
-            '⚠️ ریسک واقعی بعد از گرد کردن',
+            '⚠️ ریسک واقعی' + (' (با کارمزد/اسلیپیج)' if fees_on else ''),
         ]
     else:
         index_labels.append('📊 سایز پوزیشن')
+        if fees_on:
+            index_labels.append('💸 ضرر واقعی با کارمزد/اسلیپیج')
 
     if leverage > 1:
         index_labels.append('💳 مارجین لازم (با اهرم)')
     if tp_factor is not None:
-        index_labels += ['💵 میزان سود', '⚖️ نسبت ریوارد/ریسک']
+        index_labels += [
+            '🪙 سود خالص بعد از هزینه‌ها' if fees_on else '💵 میزان سود',
+            '📉 R:R خالص' if fees_on else '⚖️ نسبت ریوارد/ریسک',
+        ]
 
-    # 💀 فاصله تقریبی تا لیکویید: 100/اهرم − MMR
+    # 💀 فاصله تقریبی تا لیکویید: 100/اهرم − MMR (درصد حرکت علیه پوزیشن)
+    # Long: قیمت پایین می‌رود؛ Short: قیمت بالا می‌رود — درصد یکسان است
     liq_distance_pct = None
     liq_status = None
     liq_message = None
-    mmr_used_pct = None
     if leverage > 1:
-        mmr_used_pct = mmr_percentage
-
-        if mmr_used_pct is not None:
-            mmr_factor = Decimal(str(mmr_used_pct)) / Decimal('100')
+        if mmr_percentage is not None:
+            mmr_factor = Decimal(str(mmr_percentage)) / Decimal('100')
             liq_distance_pct = float((Decimal('1') / leverage_dec - mmr_factor) * Decimal('100'))
         else:
             liq_distance_pct = 100.0 / leverage
 
-        mmr_note = f" (با MMR {mmr_used_pct:.2f}٪)" if mmr_used_pct is not None else ""
+        mmr_note = f" (با MMR {mmr_percentage:.2f}٪)" if mmr_percentage is not None else ""
+        move_word = "رشد قیمت" if is_short else "افت قیمت"
 
         if liq_distance_pct <= 0:
             liq_status = "danger"
             liq_message = (
-                f"🚨 ترکیب اهرم {leverage:.0f}× و MMR {mmr_used_pct:.2f}٪ هیچ حاشیه تقریبی "
+                f"🚨 ترکیب اهرم {leverage:.0f}× و MMR {mmr_percentage:.2f}٪ هیچ حاشیه تقریبی "
                 f"برای لیکویید باقی نمی‌گذارد. این پوزیشن عملاً قابل معامله نیست."
             )
         elif stop_loss_percentage >= liq_distance_pct:
             liq_status = "danger"
             liq_message = (
-                f"🚨 فاصله لیکویید (~{liq_distance_pct:.2f}٪{mmr_note}) کمتر یا مساوی حد ضرر "
-                f"({stop_loss_percentage:.2f}٪) است! پوزیشن قبل از فعال شدن SL لیکویید می‌شود."
+                f"🚨 فاصله لیکویید (~{liq_distance_pct:.2f}٪{mmr_note} {move_word}) کمتر یا مساوی "
+                f"حد ضرر ({stop_loss_percentage:.2f}٪) است! پوزیشن قبل از فعال شدن SL لیکویید می‌شود."
             )
         elif stop_loss_percentage >= 0.8 * liq_distance_pct:
             liq_status = "caution"
             liq_message = (
                 f"⚠️ حد ضرر ({stop_loss_percentage:.2f}٪) خیلی نزدیک به فاصله لیکویید "
-                f"(~{liq_distance_pct:.2f}٪{mmr_note}) است. حاشیه خطای کمی دارید."
+                f"(~{liq_distance_pct:.2f}٪{mmr_note} {move_word}) است. حاشیه خطای کمی دارید."
             )
         else:
             liq_status = "ok"
             liq_message = (
                 f"✅ حد ضرر ({stop_loss_percentage:.2f}٪) قبل از لیکویید تقریبی "
-                f"(~{liq_distance_pct:.2f}٪{mmr_note}) فعال می‌شود."
+                f"(~{liq_distance_pct:.2f}٪{mmr_note} {move_word}) فعال می‌شود."
             )
 
     return {
@@ -363,11 +442,15 @@ def compute_results(
             "sl": stop_loss_percentage,
             "leverage": leverage,
             "use_leverage": leverage > 1,
+            "direction": direction,
             "tp": take_profit_percentage,
-            "mmr": mmr_used_pct,
+            "mmr": mmr_percentage,
             "qty_enabled": qty_enabled,
             "entry_price": entry_price,
             "qty_step": quantity_step,
+            "fees_on": fees_on,
+            "fee": fee_percentage,
+            "slippage": slippage_percentage,
             "n_levels": len(risk_levels),
         },
     }
@@ -377,7 +460,7 @@ def main():
     inject_custom_css()
 
     if "result" not in st.session_state:
-        st.session_state.result = None  # {"error": str} یا خروجی compute_results
+        st.session_state.result = None
 
     st.title('🤖 ماشین حساب مدیریت سرمایه')
     st.markdown("محاسبه دقیق سایز پوزیشن بر اساس سرمایه کل، درصد ریسک و اهرم.")
@@ -405,8 +488,16 @@ def main():
                 value=1.5,
                 step=0.1,
                 format="%.2f",
-                help="درصد افت قیمت تا حد ضرر (مثلاً ۱.۵٪ یعنی SL در ۱.۵٪ پایین‌تر از قیمت ورود)"
+                help="درصد حرکت نامساعد قیمت تا حد ضرر (Long: افت؛ Short: رشد)"
             )
+
+    direction = st.radio(
+        'جهت پوزیشن',
+        options=['long', 'short'],
+        format_func=lambda d: '🔺 لانگ (خرید)' if d == 'long' else '🔻 شورت (فروش)',
+        horizontal=True,
+        help="مدل هزینه‌ها برای هر دو جهت یکسان است: اسلیپیج نامساعد در ورود و خروج + کارمزد taker دو طرف."
+    )
 
     use_leverage = st.checkbox('⚡️ استفاده از اهرم (Leverage)', value=False)
 
@@ -420,7 +511,7 @@ def main():
         step=0.5,
         format="%.2f",
         disabled=not use_tp,
-        help="درصد رشد قیمت تا حد سود (مثلاً ۳٪ یعنی TP در ۳٪ بالاتر از قیمت ورود)"
+        help="درصد حرکت مطلوب قیمت تا حد سود (Long: رشد؛ Short: افت)"
     )
     if use_tp:
         take_profit_percentage = tp_input
@@ -437,7 +528,8 @@ def main():
             format="%.0f",
             help="اهرم معاملاتی (مثلاً 10× یعنی ده برابر قدرت خرید)"
         )
-        st.warning(f"⚠️ هشدار: با اهرم {leverage:.0f}×، فاصله تا لیکویید شدن کمتر می‌شود. سایز پوزیشن را حتماً طبق جدول تنظیم کنید!")
+        liq_word = "رشد قیمت" if direction == "short" else "افت قیمت"
+        st.warning(f"⚠️ هشدار: با اهرم {leverage:.0f}×، {liq_word} کمتر منجر به لیکویید می‌شود. سایز پوزیشن را حتماً طبق جدول تنظیم کنید!")
 
         use_mmr = st.checkbox('🧯 وارد کردن نرخ مارجین نگهداری صرافی (MMR)', value=False)
 
@@ -454,7 +546,7 @@ def main():
         if use_mmr:
             mmr_percentage = mmr_input
 
-    # ─── اطلاعات صرافی برای گرد کردن حجم ───
+    # ─── گرد کردن حجم ───
     use_qty = st.checkbox(
         '🪙 گرد کردن حجم به stepSize صرافی (نیاز به قیمت ورود دارد)',
         value=False,
@@ -482,6 +574,40 @@ def main():
             help="کوچک‌ترین گام مجاز حجم در صرافی. مثلاً 0.001 یعنی حجم باید مضربی از 0.001 باشد."
         )
 
+    # ─── کارمزد و اسلیپیج ───
+    use_fees = st.checkbox(
+        '📝 لحاظ کردن کارمزد و اسلیپیج',
+        value=False,
+        help="ضرر واقعی و سود خالص را با کارمزد taker دو طرف معامله و اسلیپیج نامساعد در ورود و خروج محاسبه می‌کند. برای هر دو جهت Long و Short درست کار می‌کند."
+    )
+
+    fee_percentage = None
+    slippage_percentage = None
+    if use_fees:
+        colf1, colf2 = st.columns(2)
+
+        with colf1:
+            fee_percentage = st.number_input(
+                'کارمزد هر طرف (٪)',
+                min_value=0.0,
+                max_value=9.99,
+                value=0.05,
+                step=0.01,
+                format="%.2f",
+                help="کارمزد taker برای هر طرف معامله (ورود و خروج جداگانه محاسبه می‌شود). مثلاً بایننس فیوچرز حدود ۰.۰۵٪."
+            )
+
+        with colf2:
+            slippage_percentage = st.number_input(
+                'اسلیپیج هر طرف (٪)',
+                min_value=0.0,
+                max_value=9.99,
+                value=0.0,
+                step=0.05,
+                format="%.2f",
+                help="اختلاف قیمت اجرا شده با قیمت دلخواه؛ در ورود و خروج هر دو به ضرر شما اعمال می‌شود."
+            )
+
     risk_inputs_str = st.text_input(
         "سطوح ریسک مورد نظر (٪) - با کاما جدا کنید:",
         value="0.25, 0.5, 1.0, 2.0",
@@ -496,7 +622,8 @@ def main():
         else:
             validation_error = validate_inputs(
                 capital, stop_loss_percentage, risk_levels, leverage,
-                take_profit_percentage, mmr_percentage, entry_price, quantity_step
+                take_profit_percentage, mmr_percentage, entry_price, quantity_step,
+                fee_percentage, slippage_percentage
             )
             if validation_error:
                 st.session_state.result = {"error": validation_error}
@@ -504,12 +631,13 @@ def main():
                 try:
                     st.session_state.result = compute_results(
                         capital, stop_loss_percentage, risk_levels, leverage,
-                        take_profit_percentage, mmr_percentage, entry_price, quantity_step
+                        take_profit_percentage, direction, mmr_percentage,
+                        entry_price, quantity_step, fee_percentage, slippage_percentage
                     )
                 except (InvalidOperation, ValueError, ZeroDivisionError) as e:
                     st.session_state.result = {"error": f"خطا در محاسبات: {str(e)}"}
 
-    # ─── نمایش نتیجه (خارج از دکمه تا با rerun پاک نشود) ───
+    # ─── نمایش نتیجه ───
     result = st.session_state.result
 
     if result is not None and "error" in result:
@@ -522,8 +650,9 @@ def main():
 
     table_df = result["df"]
     snap = result["inputs"]
+    dir_label = "🔻 Short" if snap["direction"] == "short" else "🔺 Long"
 
-    st.success("✅ محاسبات با موفقیت انجام شد.")
+    st.success(f"✅ محاسبات پوزیشن {dir_label} با موفقیت انجام شد.")
 
     if snap["use_leverage"]:
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -543,11 +672,9 @@ def main():
 
     st.dataframe(table_df, use_container_width=True, hide_index=False)
 
-    # ⚠️ هشدارها (سایز/مارجین > سرمایه، حجم صفر)
     for warning in result["warnings"]:
         st.error(warning)
 
-    # 💀 وضعیت لیکویید در مقایسه با SL
     if snap["use_leverage"]:
         st.subheader("💀 فاصله تا لیکویید")
         if result["liq_status"] == "danger":
@@ -563,36 +690,53 @@ def main():
             else "فرمول: 100 ÷ اهرم (بدون MMR — برای دقت بیشتر MMR صرافی‌تان را وارد کنید)."
         )
         st.caption(
-            f"💡 {mmr_part} مقدار واقعی به سطح ریسک پوزیشن، کارمزد، فاندینگ و "
-            "مارجین اضافه‌شده هم بستگی دارد. صرافی‌ها معمولاً بر اساس قیمت Mark لیکویید می‌کنند."
+            f"💡 {mmr_part} در Short، لیکویید با رشد قیمت رخ می‌دهد؛ در Long با افت قیمت. "
+            "مقدار واقعی به سطح ریسک پوزیشن، کارمزد، فاندینگ و مارجین اضافه‌شده هم بستگی دارد."
         )
 
-    # 📖 توضیح ردیف‌ها — بسته به فعال بودن گرد کردن حجم
+    # 📖 توضیح ردیف‌ها
     if snap["qty_enabled"]:
-        st.info("💰 ردیف اول: ریسک دلاری برنامه‌ریزی‌شده (حداکثر ضرر مجاز، قبل از گرد کردن).")
+        st.info("💰 ردیف اول: ریسک دلاری برنامه‌ریزی‌شده (حداکثر ضرر مجاز، قبل از گرد کردن و هزینه‌ها).")
         st.info(
             f"🪙 ردیف حجم: سایز پوزیشن ÷ قیمت ورود ({snap['entry_price']:g}) و گرد شده به پایین "
             f"تا مضرب stepSize ({snap['qty_step']:g}) — دقیقاً همان عددی که در صرافی وارد می‌کنید."
-        )
-        st.info(
-            "📏 سایز واقعی، ریسک واقعی، مارجین، سود و R:R همه بر اساس همین حجم قابل اجرا محاسبه شده‌اند؛ "
-            "چون گرد کردن به سمت پایین است، ریسک واقعی هرگز از برنامه بیشتر نمی‌شود."
         )
     else:
         st.info("💡 ردیف اول (میزان ریسک دلاری): حداکثر مبلغی که در صورت رسیدن به حد ضرر از دست می‌دهید.")
         st.info("🚀 ردیف دوم (سایز پوزیشن): ارزش کل دلاری معامله. برای عدد قابل اجرا در صرافی، گزینه «گرد کردن حجم به stepSize» را فعال کنید.")
 
+    if snap["fees_on"]:
+        st.info(
+            f"📝 ردیف‌های «واقعی/خالص» شامل کارمزد taker ({snap['fee']:.2f}٪ هر طرف) و اسلیپیج "
+            f"({snap['slippage']:.2f}٪ هر طرف، نامساعد در ورود و خروج) هستند — برای {dir_label} هم درست کار می‌کند. "
+            "سایز پوزیشن تغییر نکرده — فقط اثر هزینه‌ها جداگانه نشان داده شده است."
+        )
+
     if snap["use_leverage"]:
         st.info(f"💳 مارجین لازم با اهرم {snap['leverage']:.0f}×: سایز پوزیشن ÷ {snap['leverage']:.0f}")
 
     if snap["tp"] is not None:
-        st.info(f"💵 ردیف سود: اگر قیمت به حد سود ({snap['tp']:.2f}٪) برسد، این مبلغ را سود می‌کنید.")
-        st.info("⚖️ نسبت ریوارد/ریسک: سود تقسیم بر ریسک (معادل حد سود ÷ حد ضرر). عدد بالاتر بهتر است، اما به‌تنهایی تضمین سودآوری نیست؛ نرخ برد و کارمزد هم مهم‌اند.")
+        if snap["fees_on"]:
+            st.info(f"🪙 سود خالص: اگر قیمت به حد سود ({snap['tp']:.2f}٪) برسد، این مبلغ بعد از کسر کارمزد و اسلیپیج به دست شما می‌رسد. R:R خالص = سود خالص ÷ ضرر واقعی.")
+        else:
+            st.info(f"💵 ردیف سود: اگر قیمت به حد سود ({snap['tp']:.2f}٪) برسد، این مبلغ را سود می‌کنید.")
+            st.info("⚖️ نسبت ریوارد/ریسک: سود تقسیم بر ریسک (معادل حد سود ÷ حد ضرر). عدد بالاتر بهتر است، اما به‌تنهایی تضمین سودآوری نیست؛ نرخ برد و کارمزد هم مهم‌اند.")
 
-    st.caption(
-        "💡 محاسبات برای بازارهای Spot و فیوچرز خطی (Linear) است؛ قراردادهای دارای ضریب (Inverse/Multiplier) "
-        "به فرمول اضافه نیاز دارند. کارمزد و اسلیپیج لحاظ نشده‌اند."
-    )
+    if snap["direction"] == "short":
+        st.caption(
+            "💡 مدل Short برای فیوچرز/مارژین است. برای شورت کردن اسپات، هزینه قرض‌گیری (Borrow) "
+            "جداگانه وجود دارد که در این محاسبات لحاظ نشده."
+        )
+    elif snap["fees_on"]:
+        st.caption(
+            "💡 مدل هزینه‌ها: کارمزد taker روی ارزش واقعی ورود و خروج + اسلیپیج نامساعد در هر دو طرف. "
+            "کارمزد maker، فاندینگ و هزینه لیکویید لحاظ نشده‌اند."
+        )
+    else:
+        st.caption(
+            "💡 محاسبات برای بازارهای Spot و فیوچرز خطی (Linear) است؛ کارمزد و اسلیپیج لحاظ نشده‌اند — "
+            "برای دیدن اثر واقعی، گزینه «لحاظ کردن کارمزد و اسلیپیج» را فعال کنید."
+        )
 
 
 if __name__ == "__main__":
