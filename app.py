@@ -1,4 +1,7 @@
 import math
+import re
+import unicodedata
+
 import pandas as pd
 import streamlit as st
 from decimal import Decimal, InvalidOperation
@@ -100,6 +103,42 @@ def inject_custom_css():
     )
 
 
+# ─── پشتیبانی از اعداد فارسی/عربی ───
+# ارقام فارسی (۰-۹) و عربی (٠-٩) → ASCII
+DIGIT_TRANSLATION = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+    "01234567890123456789",
+)
+
+
+def normalize_risk_input(text: str) -> str:
+    """تبدیل ورودی فارسی/عربی به فرمت قابل پردازش."""
+    # اعداد تمام‌عرض و فرم‌های سازگار
+    text = unicodedata.normalize("NFKC", text)
+
+    # حذف کاراکترهای نامرئی (ZWNJ، علائم جهت RTL/LTR، BOM)
+    text = re.sub(r"[\u200c\u200d\u200e\u200f\ufeff]", "", text)
+
+    # ارقام فارسی و عربی → انگلیسی
+    text = text.translate(DIGIT_TRANSLATION)
+
+    # ممیز عربی: ۱٫۵ → 1.5
+    text = text.replace("٫", ".")
+
+    # ممیز ایرانی فقط بین دو رقم: ۰/۲۵ → 0.25
+    # (اسلش‌های دیگر دست‌نخورده می‌مانند و در ادامه خطای واضح می‌گیرند)
+    text = re.sub(r"(?<=\d)/(?=\d)", ".", text)
+
+    # کامای فارسی = جداکننده لیست
+    text = text.replace("،", ",")
+
+    # جداکننده هزارگان: عمداً خطا (ریسک < 100 است؛ ۱٬۰۰۰ یعنی کاربر اشتباه تایپ کرده)
+    if "٬" in text:
+        raise ValueError("از جداکننده هزارگان (٬) استفاده نکنید؛ سطوح ریسک را با کاما جدا کنید.")
+
+    return text.strip()
+
+
 def fmt_money(value: Decimal) -> str:
     return f"${float(value):,.2f}"
 
@@ -147,8 +186,13 @@ def parse_risk_levels(risk_input: str) -> Tuple[Optional[List[float]], Optional[
         return None, "لطفاً سطوح ریسک را وارد کنید."
 
     try:
+        risk_input = normalize_risk_input(risk_input)
+    except ValueError as e:
+        return None, str(e)
+
+    try:
         risk_levels = []
-        parts = risk_input.replace('،', ',').split(',')
+        parts = risk_input.split(',')
 
         for part in parts:
             part = part.strip()
@@ -341,7 +385,7 @@ def main():
     risk_inputs_str = st.text_input(
         "سطوح ریسک مورد نظر (٪) - با کاما جدا کنید:",
         value="0.25, 0.5, 1.0, 2.0",
-        help="مثال: 0.5, 1, 2 یا 0.25, 0.5, 1, 1.5, 2, 3"
+        help="اعداد انگلیسی یا فارسی، ممیز (.) یا (٫) یا (/)، کامای فارسی (،) هم قبول است. مثال: ۰/۲۵، ۰/۵، ۱، ۲"
     )
 
     if st.button('🧮 محاسبه کن', type="primary"):
