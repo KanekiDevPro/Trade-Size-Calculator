@@ -178,7 +178,7 @@ def compute_results(
     leverage: float,
     take_profit_percentage: Optional[float],
 ) -> dict:
-    """محاسبه جدول نمایشی (تمام مقادیر رشته) + هشدارهای سایز/مارجین."""
+    """محاسبه جدول نمایشی (تمام مقادیر رشته) + هشدارهای سایز/مارجین + فاصله لیکویید."""
 
     capital_dec = Decimal(str(capital))
     sl_factor = Decimal(str(stop_loss_percentage)) / Decimal('100')
@@ -198,7 +198,7 @@ def compute_results(
         position_size = dollar_risk / sl_factor
         margin_required = position_size / leverage_dec
 
-        # ⚠️ هشدار سایز/مارجین بیشتر از سرمایه (با مقایسه Decimal دقیق، قبل از گرد کردن)
+        # ⚠️ هشدار سایز/مارجین بیشتر از سرمایه (مقایسه Decimal دقیق، قبل از گرد کردن)
         if leverage > 1 and margin_required > capital_dec:
             warnings.append(
                 f"⚠️ سطح ریسک {risk_percent}%: مارجین لازم ({fmt_money(margin_required)}) "
@@ -230,9 +230,38 @@ def compute_results(
     if tp_factor is not None:
         index_labels += ['💵 میزان سود', '⚖️ نسبت ریوارد/ریسک']
 
+    # 💀 فاصله تقریبی تا لیکویید (مارجین ایزوله؛ بدون MMR، کارمزد و فاندینگ)
+    liq_distance_pct = None
+    liq_status = None
+    liq_message = None
+    if leverage > 1:
+        liq_distance_pct = 100.0 / leverage
+
+        if stop_loss_percentage >= liq_distance_pct:
+            liq_status = "danger"
+            liq_message = (
+                f"🚨 فاصله لیکویید (~{liq_distance_pct:.2f}٪) کمتر یا مساوی حد ضرر "
+                f"({stop_loss_percentage:.2f}٪) است! پوزیشن قبل از فعال شدن SL لیکویید می‌شود."
+            )
+        elif stop_loss_percentage >= 0.8 * liq_distance_pct:
+            liq_status = "caution"
+            liq_message = (
+                f"⚠️ حد ضرر ({stop_loss_percentage:.2f}٪) خیلی نزدیک به فاصله لیکویید "
+                f"(~{liq_distance_pct:.2f}٪) است. حاشیه خطای کمی دارید."
+            )
+        else:
+            liq_status = "ok"
+            liq_message = (
+                f"✅ حد ضرر ({stop_loss_percentage:.2f}٪) قبل از لیکویید تقریبی "
+                f"(~{liq_distance_pct:.2f}٪) فعال می‌شود."
+            )
+
     return {
         "df": pd.DataFrame(data, index=index_labels),
         "warnings": warnings,
+        "liq_distance_pct": liq_distance_pct,
+        "liq_status": liq_status,
+        "liq_message": liq_message,
         "inputs": {
             "capital": capital,
             "sl": stop_loss_percentage,
@@ -351,11 +380,12 @@ def main():
     st.success("✅ محاسبات با موفقیت انجام شد.")
 
     if snap["use_leverage"]:
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("سرمایه", f"${snap['capital']:,.0f}")
         c2.metric("حد ضرر", f"{snap['sl']:.2f}%")
         c3.metric("اهرم", f"{snap['leverage']:.0f}×")
-        c4.metric("تعداد سطوح", snap["n_levels"])
+        c4.metric("تا لیکویید (تقریبی)", f"~{result['liq_distance_pct']:.2f}%")
+        c5.metric("تعداد سطوح", snap["n_levels"])
     else:
         c1, c2, c3 = st.columns(3)
         c1.metric("سرمایه", f"${snap['capital']:,.0f}")
@@ -371,6 +401,22 @@ def main():
     # ⚠️ هشدارهای سایز/مارجین بیشتر از سرمایه
     for warning in result["warnings"]:
         st.error(warning)
+
+    # 💀 وضعیت لیکویید در مقایسه با SL
+    if snap["use_leverage"]:
+        st.subheader("💀 فاصله تا لیکویید")
+        if result["liq_status"] == "danger":
+            st.error(result["liq_message"])
+        elif result["liq_status"] == "caution":
+            st.warning(result["liq_message"])
+        else:
+            st.info(result["liq_message"])
+
+        st.caption(
+            "💡 فرمول تقریبی: 100 ÷ اهرم. مقدار واقعی به Maintenance Margin صرافی، کارمزد، "
+            "فاندینگ و مارجین اضافه‌شده بستگی دارد (تقریب دقیق‌تر: 100/اهرم − MMR). "
+            "همچنین صرافی‌ها معمولاً بر اساس قیمت Mark لیکویید می‌کنند، نه قیمت Last."
+        )
 
     st.info("💡 ردیف اول (میزان ریسک دلاری): این مقدار نشان‌دهنده حداکثر مبلغی است که شما مجازید در این معامله، در صورت رسیدن به حد ضرر، از دست بدهید.")
 
