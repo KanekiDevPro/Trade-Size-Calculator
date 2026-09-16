@@ -80,18 +80,24 @@ def inject_custom_css():
             text-align: left !important;
         }
 
+        /* دکمه‌های مرتب و هم‌عرض */
         div[data-testid="stButton"] {
-            text-align: right !important;
+            text-align: center !important;
             width: 100%;
         }
 
         .stButton button {
             direction: rtl;
-            margin-left: auto;
-            margin-right: 0;
-            width: auto;
-            border-radius: 8px;
+            width: 100%;
+            border-radius: 10px;
             font-weight: bold;
+            padding: 0.5rem 1rem;
+        }
+
+        .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, #1f77b4, #2a9d8f);
+            color: white;
+            border: none;
         }
 
         div[data-testid="stMetric"] {
@@ -103,6 +109,17 @@ def inject_custom_css():
         div[data-testid="stCheckbox"] {
             direction: rtl !important;
             text-align: right !important;
+        }
+
+        /* ظاهر بهتر expanderها */
+        div[data-testid="stExpander"] {
+            border: 1px solid #e6e6e6;
+            border-radius: 10px;
+            background-color: #fafafa;
+        }
+
+        div[data-testid="stExpander"] summary {
+            font-weight: bold;
         }
         </style>
         """,
@@ -137,10 +154,10 @@ def fmt_money(value: Decimal) -> str:
 
 
 # ─── اتصال به صرافی‌ها (فقط داده عمومی بازار؛ بدون API key) ───
-EXCHANGE_OPTIONS = ["bybit", "kucoin", "mexc", "okx", "binance"]
+# ترتیب: صرافی‌های معتبر آمریکایی اول (بدون geo-block)، بعد بقیه
+EXCHANGE_OPTIONS = ["kraken", "coinbase", "binanceus", "bybit", "kucoin", "mexc", "okx", "binance"]
 
 FUTURES_CCXT_ID = {
-    # برای فیوچرز، صرافی‌هایی که spot/futures اکسچنج جدا دارند
     "binance": "binanceusdm",
     "kucoin": "kucoinfutures",
 }
@@ -151,54 +168,89 @@ def _make_exchange(exchange_id: str, market_type: str):
         ccxt_id = FUTURES_CCXT_ID.get(exchange_id, exchange_id)
     else:
         ccxt_id = exchange_id
-    exchange = getattr(ccxt, ccxt_id)({"enableRateLimit": True})
+    exchange = getattr(ccxt, ccxt_id)({
+        "enableRateLimit": True,
+        "timeout": 12000,   # میلی‌ثانیه
+    })
     if market_type == "future":
         exchange.options["defaultType"] = "swap"
     return exchange
 
 
-def _resolve_symbol(exchange, symbol: str, market_type: str) -> str:
-    if symbol in exchange.markets:
-        return symbol
-    if market_type == "future" and ":" not in symbol:
-        candidate = f"{symbol}:USDT"   # قراردادهای پایپرپچوال ccxt: BTC/USDT:USDT
-        if candidate in exchange.markets:
-            return candidate
-    raise ValueError(f"نماد '{symbol}' در این صرافی پیدا نشد.")
+@st.cache_data(ttl=3600, show_spinner="در حال دریافت لیست نمادها از صرافی...")
+def fetch_symbols(exchange_id: str, market_type: str) -> List[str]:
+    """لیست نمادهای فعال USDT — کش ۱ ساعته، بر اساس (صرافی، نوع بازار)."""
+    exchange = _make_exchange(exchange_id, market_type)
+    exchange.load_markets()
+
+    symbols = set()
+    for m in exchange.markets.values():
+        if not m.get("active") or m.get("option"):
+            continue
+        if market_type == "spot" and m.get("quote") == "USDT":
+            base = m.get("base", "")
+            if base.endswith(("UP", "DOWN")):   # توکن‌های اهرمی
+                continue
+            symbols.add(m["symbol"])
+        elif market_type == "future" and m.get("settle") == "USDT":
+            symbols.add(m["symbol"])   # مثل BTC/USDT:USDT
+
+    return sorted(symbols)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_market_rules(exchange_id: str, market_type: str, symbol: str):
-    """stepSize و minQty حجم — قوانین صرافی که به‌ندرت عوض می‌شوند (کش ۱ ساعته)."""
+    """stepSize و minQty حجم — قوانین صرافی که به‌ندرت عوض می‌شوند."""
     exchange = _make_exchange(exchange_id, market_type)
     exchange.load_markets()
-    resolved = _resolve_symbol(exchange, symbol, market_type)
-    market = exchange.market(resolved)
+    if symbol not in exchange.markets:
+        raise ValueError(f"نماد '{symbol}' در این صرافی پیدا نشد.")
+    market = exchange.market(symbol)
 
     prec = market["precision"].get("amount")
     if prec is None:
         raise ValueError("این صرافی اطلاعات دقت حجم را ارائه نمی‌دهد.")
 
-    # precisionMode تعیین می‌کند prec تعداد اعشار است یا خودِ اندازه گام
+    # precisionMode تعیین می‌کند prec یعنی چه (تعداد اعشار یا اندازه گام)
     if exchange.precisionMode == ccxt.TICK_SIZE:
         step = Decimal(str(prec))
+    elif exchange.precisionMode == ccxt.DECIMAL_PLACES:
+        step = Decimal("1").scaleb(-int(prec))
     else:
-        step = Decimal(1).scaleb(-int(prec))
+        # SIGNIFICANT_DIGITS و بقیه: حدس زدن step خطرناک است
+        raise ValueError(
+            "حالت دقت (precisionMode) این نماد پشتیبانی نمی‌شود؛ stepSize را دستی وارد کنید."
+        )
 
     min_qty = market["limits"]["amount"].get("min")
-    return resolved, step, (Decimal(str(min_qty)) if min_qty else None)
+    return step, (Decimal(str(min_qty)) if min_qty else None)
 
 
 @st.cache_data(ttl=15, show_spinner=False)
 def fetch_current_price(exchange_id: str, market_type: str, symbol: str):
-    """آخرین قیمت نماد (کش ۱۵ ثانیه — قیمت برای معامله باید تازه باشد)."""
+    """آخرین قیمت نماد (کش ۱۵ ثانیه — قیمت باید تازه باشد)."""
     exchange = _make_exchange(exchange_id, market_type)
     exchange.load_markets()
-    resolved = _resolve_symbol(exchange, symbol, market_type)
-    ticker = exchange.fetch_ticker(resolved)
+    if symbol not in exchange.markets:
+        raise ValueError(f"نماد '{symbol}' در این صرافی پیدا نشد.")
+    ticker = exchange.fetch_ticker(symbol)
     if ticker.get("last") is None:
         raise ValueError("قیمتی برای این نماد دریافت نشد.")
-    return resolved, Decimal(str(ticker["last"]))
+    return Decimal(str(ticker["last"]))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def test_exchange_access(exchange_id: str, market_type: str) -> Tuple[bool, str]:
+    """تست سبک دسترسی به صرافی از سرور فعلی — خطا را برنمی‌گرداند."""
+    try:
+        exchange = _make_exchange(exchange_id, market_type)
+        exchange.load_markets()
+        return True, f"در دسترس — {len(exchange.markets):,} بازار"
+    except Exception as exc:
+        detail = str(exc)
+        if "451" in detail or "403" in detail or "banned" in detail.lower():
+            detail += " (به‌احتمال زیاد geo-block از سرور فعلی)"
+        return False, detail[:120]
 
 
 def validate_inputs(
@@ -371,16 +423,20 @@ def compute_results(
             qty_str = f"{float(qty):.{qty_decimals}f}"
 
             if qty == 0:
+                # حجم قابل اجرا صفر است → همه مقادیر واقعی هم صفر می‌مانند
                 warnings.append(
                     f"⚠️ سطح ریسک {risk_percent}%: حجم پوزیشن از حداقل stepSize صرافی "
                     f"({quantity_step}) کمتر است و قابل اجرا نیست!"
                 )
+                actual_size = Decimal('0')
+                real_loss = Decimal('0')
                 values += [qty_str, fmt_money(Decimal('0')), fmt_money(Decimal('0'))]
             else:
                 if min_qty_dec is not None and qty < min_qty_dec:
+                    min_qty_text = f"{float(min_qty_dec):g}"   # فرمت قبل از f-string اصلی
                     warnings.append(
                         f"⚠️ سطح ریسک {risk_percent}%: حجم {qty_str} از حداقل حجم مجاز صرافی "
-                        f"(minQty = {float(min_qty_dec):g}) کمتر است — سفارش رد می‌شود!"
+                        f"(minQty = {min_qty_text}) کمتر است — سفارش رد می‌شود!"
                     )
 
                 actual_size = qty * entry_dec
@@ -412,7 +468,11 @@ def compute_results(
                 values.append(fmt_money(real_loss))
 
         if leverage > 1:
-            margin_base = actual_size if qty_enabled and qty else position_size
+            # حجم صفر → مارجین هم صفر (نه سایز نظری!)
+            if qty_enabled and qty is not None:
+                margin_base = actual_size
+            else:
+                margin_base = position_size
             values.append(fmt_money(margin_base / leverage_dec))
 
         if tp_factor is not None:
@@ -423,7 +483,7 @@ def compute_results(
                 reward_per_unit = (
                     entry_eff - exit_tp - fee_factor * (entry_eff + exit_tp)
                 )
-                qty_exec = qty if qty_enabled and qty else position_size / entry_eff
+                qty_exec = qty if (qty_enabled and qty is not None) else position_size / entry_eff
                 net_reward = qty_exec * reward_per_unit
 
                 if net_reward > 0:
@@ -440,7 +500,7 @@ def compute_results(
             elif fees_on:
                 values += [fmt_money(Decimal('0')), "—"]
             else:
-                reward_base = actual_size if qty_enabled and qty else position_size
+                reward_base = actual_size if qty_enabled else position_size
                 reward = reward_base * tp_factor
                 values.append(fmt_money(reward))
                 denom = real_loss if real_loss else dollar_risk
@@ -548,6 +608,7 @@ def main():
 
     st.divider()
 
+    # ═══════════ تنظیمات اصلی ═══════════
     with st.container():
         col1, col2 = st.columns(2)
 
@@ -580,179 +641,243 @@ def main():
         help="مدل هزینه‌ها برای هر دو جهت یکسان است: اسلیپیج نامساعد در ورود و خروج + کارمزد taker دو طرف."
     )
 
-    use_leverage = st.checkbox('⚡️ استفاده از اهرم (Leverage)', value=False)
-
-    use_tp = st.checkbox('🎯 محاسبه حد سود (TP)', value=True)
-
-    take_profit_percentage = None
-    tp_input = st.number_input(
-        'حد سود معامله (٪)',
-        min_value=0.01,
-        value=3.0,
-        step=0.5,
-        format="%.2f",
-        disabled=not use_tp,
-        help="درصد حرکت مطلوب قیمت تا حد سود (Long: رشد؛ Short: افت)"
-    )
-    if use_tp:
-        take_profit_percentage = tp_input
-
+    # ═══════════ اهرم و لیکویید ═══════════
     leverage = 1.0
     mmr_percentage = None
-    if use_leverage:
-        leverage = st.number_input(
-            'مقدار اهرم (×)',
-            min_value=1.0,
-            max_value=125.0,
-            value=10.0,
-            step=1.0,
-            format="%.0f",
-            help="اهرم معاملاتی (مثلاً 10× یعنی ده برابر قدرت خرید)"
-        )
-        liq_word = "رشد قیمت" if direction == "short" else "افت قیمت"
-        st.warning(f"⚠️ هشدار: با اهرم {leverage:.0f}×، {liq_word} کمتر منجر به لیکویید می‌شود. سایز پوزیشن را حتماً طبق جدول تنظیم کنید!")
 
-        use_mmr = st.checkbox('🧯 وارد کردن نرخ مارجین نگهداری صرافی (MMR)', value=False)
+    with st.expander("⚡️ اهرم، مارجین و لیکویید", expanded=False):
+        use_leverage = st.checkbox('استفاده از اهرم (Leverage)', value=False)
 
-        mmr_input = st.number_input(
-            'نرخ مارجین نگهداری (MMR ٪)',
-            min_value=0.0,
-            max_value=99.99,
-            value=0.5,
-            step=0.1,
+        if use_leverage:
+            leverage = st.number_input(
+                'مقدار اهرم (×)',
+                min_value=1.0,
+                max_value=125.0,
+                value=10.0,
+                step=1.0,
+                format="%.0f",
+                help="اهرم معاملاتی (مثلاً 10× یعنی ده برابر قدرت خرید)"
+            )
+            liq_word = "رشد قیمت" if direction == "short" else "افت قیمت"
+            st.warning(f"⚠️ با اهرم {leverage:.0f}×، {liq_word} کمتر منجر به لیکویید می‌شود!")
+
+            use_mmr = st.checkbox('وارد کردن نرخ مارجین نگهداری صرافی (MMR)', value=False)
+
+            mmr_input = st.number_input(
+                'نرخ مارجین نگهداری (MMR ٪)',
+                min_value=0.0,
+                max_value=99.99,
+                value=0.5,
+                step=0.1,
+                format="%.2f",
+                disabled=not use_mmr,
+                help="نرخ مارجین نگهداری صرافی شما (درصدی از ارزش پوزیشن). عدد دقیق را از صفحه ریسک صرافی چک کنید."
+            )
+            if use_mmr:
+                mmr_percentage = mmr_input
+
+    # ═══════════ حد سود ═══════════
+    with st.expander("🎯 حد سود (TP)", expanded=True):
+        use_tp = st.checkbox('محاسبه حد سود', value=True)
+
+        take_profit_percentage = None
+        tp_input = st.number_input(
+            'حد سود معامله (٪)',
+            min_value=0.01,
+            value=3.0,
+            step=0.5,
             format="%.2f",
-            disabled=not use_mmr,
-            help="نرخ مارجین نگهداری صرافی شما (درصدی از ارزش پوزیشن). عدد دقیق را از صفحه ریسک صرافی خودتان چک کنید."
+            disabled=not use_tp,
+            help="درصد حرکت مطلوب قیمت تا حد سود (Long: رشد؛ Short: افت)"
         )
-        if use_mmr:
-            mmr_percentage = mmr_input
+        if use_tp:
+            take_profit_percentage = tp_input
 
-    # ─── گرد کردن حجم + دریافت خودکار از صرافی ───
-    use_qty = st.checkbox(
-        '🪙 گرد کردن حجم به stepSize صرافی',
-        value=False,
-        help="حجم را به مضرب stepSize صرافی گرد می‌کند تا عدد جدول مستقیماً قابل اجرا باشد. قیمت ورود و stepSize را می‌توانید خودکار از صرافی بگیرید یا دستی وارد کنید."
-    )
-
+    # ═══════════ گرد کردن حجم + صرافی ═══════════
+    use_qty = False
     entry_price = None
     quantity_step = None
-    if use_qty:
-        if not CCXT_AVAILABLE:
-            st.info("📦 برای دریافت خودکار از صرافی، پکیج ccxt را نصب کنید: `pip install ccxt` — فعلاً می‌توانید دستی وارد کنید.")
-        else:
-            st.markdown("**🔄 دریافت خودکار از صرافی (بدون نیاز به API key):**")
-            fc1, fc2 = st.columns(2)
+    exchange_id = None
+    market_type = "spot"
+    symbol = None
+    symbols_list = []
+    current_symbol = None
 
-            with fc1:
-                exchange_id = st.selectbox(
-                    'صرافی',
-                    EXCHANGE_OPTIONS,
-                    index=0,
-                    format_func=lambda x: x.title(),
-                    help="بایننس ممکن است از برخی سرورها (مثل Streamlit Cloud) geo-block باشد؛ Bybit و KuCoin معمولاً در دسترس‌ترند."
-                )
+    with st.expander("🪙 گرد کردن حجم به stepSize صرافی (دریافت خودکار از صرافی)", expanded=False):
+        use_qty = st.checkbox(
+            'فعال کردن گرد کردن حجم',
+            value=False,
+            help="حجم را به مضرب stepSize صرافی گرد می‌کند تا عدد جدول مستقیماً قابل اجرا باشد. قیمت ورود و stepSize را می‌توانید خودکار از صرافی بگیرید یا دستی وارد کنید."
+        )
 
-            with fc2:
-                market_type = st.selectbox(
-                    'نوع بازار',
-                    ['spot', 'future'],
-                    format_func=lambda x: 'اسپات' if x == 'spot' else 'فیوچرز (پایپرپچوال)'
-                )
+        if use_qty:
+            if not CCXT_AVAILABLE:
+                st.info("📦 برای دریافت خودکار از صرافی، پکیج ccxt را نصب کنید: `pip install ccxt` — فعلاً می‌توانید دستی وارد کنید.")
+            else:
+                fc1, fc2 = st.columns(2)
 
-            symbol = st.text_input(
-                'نماد (فرمت ccxt، مثل BTC/USDT)',
-                value='BTC/USDT',
-                help="برای فیوچرز اگر نماد پیدا نشود، خودکار پسوند :USDT امتحان می‌شود (مثل BTC/USDT:USDT)."
+                with fc1:
+                    exchange_id = st.selectbox(
+                        'صرافی',
+                        EXCHANGE_OPTIONS,
+                        index=0,
+                        format_func=lambda x: x.title(),
+                        help="Kraken و Coinbase از سرورهای آمریکایی (مثل Streamlit Cloud) در دسترس‌ترند. بایننس معمولاً geo-block است."
+                    )
+
+                with fc2:
+                    market_type = st.selectbox(
+                        'نوع بازار',
+                        ['spot', 'future'],
+                        format_func=lambda x: 'اسپات' if x == 'spot' else 'فیوچرز (پایپرپچوال)'
+                    )
+
+                symbols_key = f"symbols_{exchange_id}_{market_type}"
+
+                b1, b2 = st.columns(2)
+                with b1:
+                    if st.button('📋 دریافت لیست نمادها', key=f"load_symbols_{exchange_id}_{market_type}"):
+                        try:
+                            st.session_state[symbols_key] = fetch_symbols(exchange_id, market_type)
+                        except Exception as e:
+                            st.session_state[symbols_key] = []
+                            st.error(
+                                f"❌ دریافت لیست نمادها ناموفق بود: {e}\n\n"
+                                f"💡 اگر خطای شبکه/دسترسی است، صرافی دیگری را امتحان کنید."
+                            )
+
+                with b2:
+                    if st.button('🌐 تست دسترسی صرافی‌ها', key="test_all"):
+                        results = []
+                        progress = st.progress(0.0, text="در حال تست صرافی‌ها...")
+                        for i, ex_id in enumerate(EXCHANGE_OPTIONS):
+                            ok, detail = test_exchange_access(ex_id, market_type)
+                            results.append({
+                                "صرافی": ex_id.title(),
+                                "وضعیت": "✅ در دسترس" if ok else "❌ بلاک/خطا",
+                                "جزئیات": detail,
+                            })
+                            progress.progress((i + 1) / len(EXCHANGE_OPTIONS))
+                        progress.empty()
+                        st.session_state["exchange_tests"] = results
+
+                # نمایش نتایج تست ذخیره‌شده
+                if "exchange_tests" in st.session_state:
+                    st.dataframe(
+                        pd.DataFrame(st.session_state["exchange_tests"]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                symbols_list = st.session_state.get(symbols_key, [])
+
+                if symbols_list:
+                    symbol = st.selectbox(
+                        'نماد (برای جستجو شروع به تایپ کنید)',
+                        options=symbols_list,
+                        index=0,
+                        key=f"symbol_sel_{exchange_id}_{market_type}",
+                        help="لیست فقط شامل نمادهای فعال USDT است. فیوچرزها به شکل BTC/USDT:USDT نمایش داده می‌شوند."
+                    )
+                    current_symbol = symbol
+
+                    if st.button('🔄 دریافت قیمت و stepSize', key=f"fetch_data_{exchange_id}_{market_type}"):
+                        try:
+                            step_fetched, min_q = fetch_market_rules(exchange_id, market_type, symbol)
+                            price_dec = fetch_current_price(exchange_id, market_type, symbol)
+
+                            # مقداردهی قبل از ساخت widgetها → بدون rerun
+                            st.session_state["entry_price_input"] = float(price_dec)
+                            st.session_state["quantity_step_input"] = float(step_fetched)
+                            st.session_state["min_qty_fetched"] = float(min_q) if min_q else None
+                            st.session_state["fetched_symbol"] = symbol
+
+                            min_qty_text = f"{float(min_q):g}" if min_q else "—"
+                            st.session_state["fetched_from"] = (
+                                f"{exchange_id.title()} • {symbol} • قیمت {float(price_dec):g} • "
+                                f"stepSize {float(step_fetched):g} • minQty {min_qty_text}"
+                            )
+                            st.success(
+                                f"✅ {symbol}: قیمت {float(price_dec):g} | "
+                                f"stepSize {float(step_fetched):g} | minQty {min_qty_text}"
+                            )
+                        except Exception as e:
+                            st.error(
+                                f"❌ دریافت اطلاعات ناموفق بود: {e}\n\n"
+                                f"💡 مقادیر را می‌توانید دستی وارد کنید."
+                            )
+
+                    if st.session_state.get("fetched_symbol") and st.session_state["fetched_symbol"] != current_symbol:
+                        st.warning("⚠️ نماد عوض شده — دوباره «دریافت قیمت و stepSize» بزنید.")
+                    elif st.session_state.get("fetched_from"):
+                        st.caption(f"📡 {st.session_state['fetched_from']}")
+                else:
+                    st.info("ابتدا «📋 دریافت لیست نمادها» را بزنید (لیست کش می‌شود و بار دوم فوری است) — یا مقادیر را دستی وارد کنید.")
+
+            entry_price = st.number_input(
+                'قیمت ورود (USD)',
+                min_value=0.0001,
+                value=100.0,
+                step=0.1,
+                format="%.6f",
+                key="entry_price_input",
+                help="قیمتی که قصد ورود به معامله را دارید. حجم = سایز پوزیشن ÷ این قیمت. عدد دریافت‌شده قابل ویرایش است."
             )
 
-            if st.button('🔄 دریافت قیمت و stepSize از صرافی'):
-                sym = symbol.strip().upper().replace('-', '/')
-                if not sym:
-                    st.error("❌ نماد را وارد کنید.")
-                else:
-                    try:
-                        resolved, step_dec_fetched, min_q = fetch_market_rules(exchange_id, market_type, sym)
-                        resolved_p, price_dec = fetch_current_price(exchange_id, market_type, sym)
+            quantity_step = st.number_input(
+                'stepSize حجم (مثلاً 0.001)',
+                min_value=0.000001,
+                value=0.001,
+                step=0.001,
+                format="%.6f",
+                key="quantity_step_input",
+                help="کوچک‌ترین گام مجاز حجم در صرافی (فیلد LOT_SIZE). عدد دریافت‌شده قابل ویرایش است."
+            )
 
-                        # مقداردهی قبل از ساخت widgetها → بدون نیاز به rerun
-                        st.session_state["entry_price_input"] = float(price_dec)
-                        st.session_state["quantity_step_input"] = float(step_dec_fetched)
-                        st.session_state["min_qty_fetched"] = float(min_q) if min_q else None
-                        st.session_state["fetched_from"] = (
-                            f"{exchange_id.title()} • {resolved} • قیمت {float(price_dec):g} • "
-                            f"stepSize {float(step_dec_fetched):g} • "
-                            f"minQty {float(min_q):g}" if min_q else f"minQty —"
-                        )
-                        st.success(f"✅ از {resolved} دریافت شد: قیمت {float(price_dec):g} | stepSize {float(step_dec_fetched):g} | minQty {float(min_q):g if min_q else '—'}")
-                    except Exception as e:
-                        st.error(
-                            f"❌ دریافت اطلاعات ناموفق بود: {e}\n\n"
-                            f"💡 اگر خطای شبکه/دسترسی است (geo-block)، صرافی دیگری را امتحان کنید یا مقادیر را دستی وارد کنید."
-                        )
-
-            if st.session_state.get("fetched_from"):
-                st.caption(f"📡 داده صرافی: {st.session_state['fetched_from']} — اگر نماد را عوض کردید، دوباره دریافت کنید.")
-
-        entry_price = st.number_input(
-            'قیمت ورود (USD)',
-            min_value=0.0001,
-            value=100.0,
-            step=0.1,
-            format="%.6f",
-            key="entry_price_input",
-            help="قیمتی که قصد ورود به معامله را دارید. حجم = سایز پوزیشن ÷ این قیمت. عدد دریافت‌شده از صرافی قابل ویرایش است."
-        )
-
-        quantity_step = st.number_input(
-            'stepSize حجم (مثلاً 0.001)',
-            min_value=0.000001,
-            value=0.001,
-            step=0.001,
-            format="%.6f",
-            key="quantity_step_input",
-            help="کوچک‌ترین گام مجاز حجم در صرافی (فیلد LOT_SIZE). عدد دریافت‌شده قابل ویرایش است."
-        )
-
-    # ─── کارمزد و اسلیپیج ───
-    use_fees = st.checkbox(
-        '📝 لحاظ کردن کارمزد و اسلیپیج',
-        value=False,
-        help="ضرر واقعی و سود خالص را با کارمزد taker دو طرف معامله و اسلیپیج نامساعد در ورود و خروج محاسبه می‌کند. برای هر دو جهت Long و Short درست کار می‌کند."
-    )
-
+    # ═══════════ کارمزد و اسلیپیج ═══════════
     fee_percentage = None
     slippage_percentage = None
-    if use_fees:
-        colf1, colf2 = st.columns(2)
 
-        with colf1:
-            fee_percentage = st.number_input(
-                'کارمزد هر طرف (٪)',
-                min_value=0.0,
-                max_value=9.99,
-                value=0.05,
-                step=0.01,
-                format="%.2f",
-                help="کارمزد taker برای هر طرف معامله (ورود و خروج جداگانه محاسبه می‌شود). مثلاً بایننس فیوچرز حدود ۰.۰۵٪."
-            )
+    with st.expander("📝 کارمزد و اسلیپیج (اختیاری)", expanded=False):
+        use_fees = st.checkbox(
+            'لحاظ کردن کارمزد و اسلیپیج',
+            value=False,
+            help="ضرر واقعی و سود خالص را با کارمزد taker دو طرف معامله و اسلیپیج نامساعد در ورود و خروج محاسبه می‌کند. برای هر دو جهت Long و Short درست کار می‌کند."
+        )
 
-        with colf2:
-            slippage_percentage = st.number_input(
-                'اسلیپیج هر طرف (٪)',
-                min_value=0.0,
-                max_value=9.99,
-                value=0.0,
-                step=0.05,
-                format="%.2f",
-                help="اختلاف قیمت اجرا شده با قیمت دلخواه؛ در ورود و خروج هر دو به ضرر شما اعمال می‌شود."
-            )
+        if use_fees:
+            colf1, colf2 = st.columns(2)
 
+            with colf1:
+                fee_percentage = st.number_input(
+                    'کارمزد هر طرف (٪)',
+                    min_value=0.0,
+                    max_value=9.99,
+                    value=0.05,
+                    step=0.01,
+                    format="%.2f",
+                    help="کارمزد taker برای هر طرف معامله (ورود و خروج جداگانه محاسبه می‌شود). مثلاً بایننس فیوچرز حدود ۰.۰۵٪."
+                )
+
+            with colf2:
+                slippage_percentage = st.number_input(
+                    'اسلیپیج هر طرف (٪)',
+                    min_value=0.0,
+                    max_value=9.99,
+                    value=0.0,
+                    step=0.05,
+                    format="%.2f",
+                    help="اختلاف قیمت اجرا شده با قیمت دلخواه؛ در ورود و خروج هر دو به ضرر شما اعمال می‌شود."
+                )
+
+    # ═══════════ سطوح ریسک ═══════════
     risk_inputs_str = st.text_input(
         "سطوح ریسک مورد نظر (٪) - با کاما جدا کنید:",
         value="0.25, 0.5, 1.0, 2.0",
         help="اعداد انگلیسی یا فارسی، ممیز (.) یا (٫) یا (/)، کامای فارسی (،) هم قبول است. مثال: ۰/۲۵، ۰/۵، ۱، ۲"
     )
 
+    # ═══════════ دکمه محاسبه ═══════════
     if st.button('🧮 محاسبه کن', type="primary"):
         risk_levels, parse_error = parse_risk_levels(risk_inputs_str)
 
@@ -768,16 +893,23 @@ def main():
                 st.session_state.result = {"error": validation_error}
             else:
                 try:
+                    # minQty فقط وقتی معتبر است که به نماد فعلی تعلق داشته باشد
+                    min_qty_to_use = (
+                        st.session_state.get("min_qty_fetched")
+                        if use_qty
+                        and st.session_state.get("fetched_symbol") == current_symbol
+                        else None
+                    )
                     st.session_state.result = compute_results(
                         capital, stop_loss_percentage, risk_levels, leverage,
                         take_profit_percentage, direction, mmr_percentage,
                         entry_price, quantity_step, fee_percentage, slippage_percentage,
-                        min_qty=st.session_state.get("min_qty_fetched")
+                        min_qty=min_qty_to_use
                     )
                 except (InvalidOperation, ValueError, ZeroDivisionError) as e:
                     st.session_state.result = {"error": f"خطا در محاسبات: {str(e)}"}
 
-    # ─── نمایش نتیجه ───
+    # ═══════════ نمایش نتیجه ═══════════
     result = st.session_state.result
 
     if result is not None and "error" in result:
@@ -815,69 +947,62 @@ def main():
     for warning in result["warnings"]:
         st.error(warning)
 
+    # 💀 لیکویید داخل expander خودش
     if snap["use_leverage"]:
-        st.subheader("💀 فاصله تا لیکویید")
-        if result["liq_status"] == "danger":
-            st.error(result["liq_message"])
-        elif result["liq_status"] == "caution":
-            st.warning(result["liq_message"])
+        with st.expander("💀 فاصله تا لیکویید — جزئیات", expanded=bool(result["liq_status"] != "ok")):
+            if result["liq_status"] == "danger":
+                st.error(result["liq_message"])
+            elif result["liq_status"] == "caution":
+                st.warning(result["liq_message"])
+            else:
+                st.info(result["liq_message"])
+
+            mmr_part = (
+                f"فرمول: 100 ÷ اهرم − MMR ({snap['mmr']:.2f}٪)."
+                if snap["mmr"] is not None
+                else "فرمول: 100 ÷ اهرم (بدون MMR — برای دقت بیشتر MMR صرافی‌تان را وارد کنید)."
+            )
+            st.caption(
+                f"💡 {mmr_part} در Short، لیکویید با رشد قیمت رخ می‌دهد؛ در Long با افت قیمت. "
+                "مقدار واقعی به سطح ریسک پوزیشن، کارمزد، فاندینگ و مارجین اضافه‌شده هم بستگی دارد."
+            )
+
+    # 📖 توضیح ردیف‌ها — جمع و جور در یک expander
+    with st.expander("📖 توضیح ردیف‌های جدول", expanded=False):
+        if snap["qty_enabled"]:
+            st.markdown("💰 **ردیف اول:** ریسک دلاری برنامه‌ریزی‌شده (حداکثر ضرر مجاز، قبل از گرد کردن و هزینه‌ها).")
+            st.markdown(
+                f"🪙 **ردیف حجم:** سایز پوزیشن ÷ قیمت ورود ({snap['entry_price']:g}) و گرد شده به پایین "
+                f"تا مضرب stepSize ({snap['qty_step']:g}) — دقیقاً همان عددی که در صرافی وارد می‌کنید."
+                + (f" چک minQty ({snap['min_qty']:g}) هم انجام شده است." if snap["min_qty"] else "")
+            )
         else:
-            st.info(result["liq_message"])
+            st.markdown("💡 **ردیف اول (ریسک دلاری):** حداکثر مبلغی که در صورت رسیدن به حد ضرر از دست می‌دهید.")
+            st.markdown("🚀 **ردیف دوم (سایز پوزیشن):** ارزش کل دلاری معامله. برای عدد قابل اجرا در صرافی، گزینه «گرد کردن حجم به stepSize» را فعال کنید.")
 
-        mmr_part = (
-            f"فرمول: 100 ÷ اهرم − MMR ({snap['mmr']:.2f}٪)."
-            if snap["mmr"] is not None
-            else "فرمول: 100 ÷ اهرم (بدون MMR — برای دقت بیشتر MMR صرافی‌تان را وارد کنید)."
-        )
-        st.caption(
-            f"💡 {mmr_part} در Short، لیکویید با رشد قیمت رخ می‌دهد؛ در Long با افت قیمت. "
-            "مقدار واقعی به سطح ریسک پوزیشن، کارمزد، فاندینگ و مارجین اضافه‌شده هم بستگی دارد."
-        )
-
-    # 📖 توضیح ردیف‌ها
-    if snap["qty_enabled"]:
-        st.info("💰 ردیف اول: ریسک دلاری برنامه‌ریزی‌شده (حداکثر ضرر مجاز، قبل از گرد کردن و هزینه‌ها).")
-        st.info(
-            f"🪙 ردیف حجم: سایز پوزیشن ÷ قیمت ورود ({snap['entry_price']:g}) و گرد شده به پایین "
-            f"تا مضرب stepSize ({snap['qty_step']:g}) — دقیقاً همان عددی که در صرافی وارد می‌کنید."
-            + (f" چک minQty ({snap['min_qty']:g}) هم انجام شده است." if snap["min_qty"] else "")
-        )
-    else:
-        st.info("💡 ردیف اول (میزان ریسک دلاری): حداکثر مبلغی که در صورت رسیدن به حد ضرر از دست می‌دهید.")
-        st.info("🚀 ردیف دوم (سایز پوزیشن): ارزش کل دلاری معامله. برای عدد قابل اجرا در صرافی، گزینه «گرد کردن حجم به stepSize» را فعال کنید.")
-
-    if snap["fees_on"]:
-        st.info(
-            f"📝 ردیف‌های «واقعی/خالص» شامل کارمزد taker ({snap['fee']:.2f}٪ هر طرف) و اسلیپیج "
-            f"({snap['slippage']:.2f}٪ هر طرف، نامساعد در ورود و خروج) هستند — برای {dir_label} هم درست کار می‌کند. "
-            "سایز پوزیشن تغییر نکرده — فقط اثر هزینه‌ها جداگانه نشان داده شده است."
-        )
-
-    if snap["use_leverage"]:
-        st.info(f"💳 مارجین لازم با اهرم {snap['leverage']:.0f}×: سایز پوزیشن ÷ {snap['leverage']:.0f}")
-
-    if snap["tp"] is not None:
         if snap["fees_on"]:
-            st.info(f"🪙 سود خالص: اگر قیمت به حد سود ({snap['tp']:.2f}٪) برسد، این مبلغ بعد از کسر کارمزد و اسلیپیج به دست شما می‌رسد. R:R خالص = سود خالص ÷ ضرر واقعی.")
-        else:
-            st.info(f"💵 ردیف سود: اگر قیمت به حد سود ({snap['tp']:.2f}٪) برسد، این مبلغ را سود می‌کنید.")
-            st.info("⚖️ نسبت ریوارد/ریسک: سود تقسیم بر ریسک (معادل حد سود ÷ حد ضرر). عدد بالاتر بهتر است، اما به‌تنهایی تضمین سودآوری نیست؛ نرخ برد و کارمزد هم مهم‌اند.")
+            st.markdown(
+                f"📝 ردیف‌های «واقعی/خالص» شامل کارمزد taker ({snap['fee']:.2f}٪ هر طرف) و اسلیپیج "
+                f"({snap['slippage']:.2f}٪ هر طرف، نامساعد در ورود و خروج) هستند — برای {dir_label} هم درست کار می‌کند. "
+                "سایز پوزیشن تغییر نکرده — فقط اثر هزینه‌ها جداگانه نشان داده شده است."
+            )
 
-    if snap["direction"] == "short":
-        st.caption(
-            "💡 مدل Short برای فیوچرز/مارژین است. برای شورت کردن اسپات، هزینه قرض‌گیری (Borrow) "
-            "جداگانه وجود دارد که در این محاسبات لحاظ نشده."
-        )
-    elif snap["fees_on"]:
-        st.caption(
-            "💡 مدل هزینه‌ها: کارمزد taker روی ارزش واقعی ورود و خروج + اسلیپیج نامساعد در هر دو طرف. "
-            "کارمزد maker، فاندینگ و هزینه لیکویید لحاظ نشده‌اند."
-        )
-    else:
-        st.caption(
-            "💡 محاسبات برای بازارهای Spot و فیوچرز خطی (Linear) است؛ کارمزد و اسلیپیج لحاظ نشده‌اند — "
-            "برای دیدن اثر واقعی، گزینه «لحاظ کردن کارمزد و اسلیپیج» را فعال کنید."
-        )
+        if snap["use_leverage"]:
+            st.markdown(f"💳 **مارجین لازم** با اهرم {snap['leverage']:.0f}×: سایز پوزیشن ÷ {snap['leverage']:.0f}")
+
+        if snap["tp"] is not None:
+            if snap["fees_on"]:
+                st.markdown(f"🪙 **سود خالص:** بعد از کسر کارمزد و اسلیپیج. R:R خالص = سود خالص ÷ ضرر واقعی.")
+            else:
+                st.markdown(f"💵 **ردیف سود:** اگر قیمت به حد سود ({snap['tp']:.2f}٪) برسد، این مبلغ را سود می‌کنید.")
+                st.markdown("⚖️ **R:R:** سود تقسیم بر ریسک. بالاتر بهتر است، اما به‌تنهایی تضمین سودآوری نیست؛ نرخ برد و کارمزد هم مهم‌اند.")
+
+        if snap["direction"] == "short":
+            st.caption("💡 مدل Short برای فیوچرز/مارژین است. شورت اسپات هزینه قرض‌گیری (Borrow) جداگانه دارد که لحاظ نشده.")
+        elif snap["fees_on"]:
+            st.caption("💡 مدل هزینه‌ها: کارمزد taker روی ارزش واقعی ورود و خروج + اسلیپیج نامساعد در هر دو طرف. maker fee، فاندینگ و هزینه لیکویید لحاظ نشده‌اند.")
+        else:
+            st.caption("💡 محاسبات برای بازارهای Spot و فیوچرز خطی (Linear) است؛ کارمزد و اسلیپیج لحاظ نشده‌اند — برای دیدن اثر واقعی، بخش «کارمزد و اسلیپیج» را فعال کنید.")
 
 
 if __name__ == "__main__":
